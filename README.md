@@ -42,7 +42,7 @@ Then make your custom XML asset type. For top-level assets it should extend at l
   // inject into the GaugeComponent.FragmentShader field as <FragmentEx>
   typeof(GaugeComponent), nameof(GaugeComponent.FragmentShader), "FragmentEx"
 )]
-public class ShaderEx : Shader
+public class ShaderEx : ShaderReference
 {
   // your custom type here
 }
