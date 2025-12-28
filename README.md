@@ -5,6 +5,7 @@ Utilities for extending KSA assets.
 Current Features:
 - Allows adding new xml asset types that can be used by any mod XML
 - Adds a `<ShaderEx>` asset that allows adding additional texture and uniform buffer bindings to the fragment shader of a gauge component
+- Adds a `<GaugeCanvasEx>` asset that allows adding a post-processing shader to the rendered gauge
 
 ## Installation
 
@@ -165,4 +166,30 @@ Buffers can be shared between shaders by specifying `Id` without `Size`.
     <MyBuffer Id="MyBuf2" />
   </ShaderEx>
 </Assets>
+```
+
+## GaugeCanvas Post-Processing
+
+To add a post-processing shader to a Gauge, use the `<GaugeCanvasEx>` element and add a vertex and fragment shader to it. The included `GaugeVertexPost` vertex shader draws one rect covering the entire gauge, and can be used in most cases. The fragment shader is a `ShaderEx` asset that will have `layout(set=1, binding=0)` bound to the rendered gauge canvas.
+
+```xml
+<Assets>
+  <GaugeCanvasEx>
+    <PostVertex Id="GaugeVertexPost" />
+    <PostFragment Path="MyPost.frag" />
+  </GaugeCanvasEx>
+</Assets>
+```
+
+```glsl
+#version 450
+
+layout(location = 0) in vec2 inUv;
+layout(location = 0) out vec4 outColor;
+layout(set = 1, binding = 0) uniform sampler2D gaugeCanvas;
+
+void main()
+{
+  outColor = textureLod(gaugeCanvas, inUv, 0);
+}
 ```

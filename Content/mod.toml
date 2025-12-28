@@ -13,7 +13,7 @@ planetMeshes = [ ]
 systems = [ ]
 
 # asset xml definitions allow generic pools of assets to be loaded for use through the project, such as meshes and textures
-assets = [ ]
+assets = [ "Assets.xml" ]
 
 # data to load for star instances
 starBinaries = [ ]

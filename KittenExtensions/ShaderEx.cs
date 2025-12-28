@@ -37,23 +37,31 @@ public class ShaderEx : ShaderReference, IBinder
       Bindings.Add(((IShaderBinding)binding).Get());
   }
 
-  public static DescriptorPoolEx GaugeCreateDescriptorPool(
-    Device device, DescriptorPoolEx.CreateInfo createInfo, VkAllocator allocator, GaugeComponent component)
+  public static DescriptorPoolEx CreateDescriptorPool(
+    ShaderReference shader,
+    Device device,
+    DescriptorPoolEx.CreateInfo defaultCreate,
+    VkAllocator allocator = null)
   {
-    if (component.FragmentShader.Get() is not ShaderEx frag)
-      return device.CreateDescriptorPool(createInfo, allocator);
+    if (shader.Get() is ShaderEx frag)
+      return frag.CreateDescriptorPool(device, defaultCreate.PoolSizes[0].Type, allocator);
+    return device.CreateDescriptorPool(defaultCreate, allocator);
 
-    // add room in descriptor pool for new bindings
+  }
+  public DescriptorPoolEx CreateDescriptorPool(
+    Device device,
+    VkDescriptorType baseType,
+    VkAllocator allocator = null)
+  {
     Span<VkDescriptorPoolSize> poolSizes = stackalloc VkDescriptorPoolSize[TYPE_COUNT];
     for (var i = 0; i < TYPE_COUNT; i++)
       poolSizes[i] = new VkDescriptorPoolSize { Type = DESCRIPTOR_TYPES[i], DescriptorCount = 0 };
 
-    // always have gauge font atlas
-    poolSizes[TypeIndex(VkDescriptorType.CombinedImageSampler)].DescriptorCount = 1;
+    // always have one base image input (gauge font atlas or subpass 1 output)
+    poolSizes[TypeIndex(baseType)].DescriptorCount = 1;
 
-    foreach (var binding in frag.Bindings)
+    foreach (var binding in Bindings)
       poolSizes[TypeIndex(binding.DescriptorType)].DescriptorCount += binding.DescriptorCount;
-
 
     var nonZero = 0;
     for (var i = 0; i < TYPE_COUNT; i++)
@@ -62,21 +70,34 @@ public class ShaderEx : ShaderReference, IBinder
 
     poolSizes = poolSizes[..nonZero];
 
-    return device.CreateDescriptorPool(createInfo with { PoolSizes = poolSizes }, allocator);
+    return device.CreateDescriptorPool(new DescriptorPoolEx.CreateInfo
+    {
+      MaxSets = 1,
+      PoolSizes = poolSizes,
+    }, allocator);
   }
 
-  public static DescriptorSetLayoutEx GaugeCreateDescriptorSetLayout(
-    Device device, scoped DescriptorSetLayoutEx.CreateInfo createInfo, VkAllocator allocator, GaugeComponent component)
+  public static DescriptorSetLayoutEx CreateDescriptorSetLayout(
+    ShaderReference shader,
+    Device device,
+    DescriptorSetLayoutEx.CreateInfo defaultCreate,
+    VkAllocator allocator = null)
   {
-    if (component.FragmentShader.Get() is not ShaderEx frag)
-      return device.CreateDescriptorSetLayout(createInfo, allocator);
-
-    var bindingCount = frag.Bindings.Count;
+    if (shader.Get() is ShaderEx frag)
+      return frag.CreateDescriptorSetLayout(device, defaultCreate.Bindings[0], allocator);
+    return device.CreateDescriptorSetLayout(defaultCreate, allocator);
+  }
+  public DescriptorSetLayoutEx CreateDescriptorSetLayout(
+    Device device,
+    VkDescriptorSetLayoutBinding baseBinding,
+    VkAllocator allocator = null)
+  {
+    var bindingCount = Bindings.Count;
     Span<VkDescriptorSetLayoutBinding> bindings = stackalloc VkDescriptorSetLayoutBinding[1 + bindingCount];
-    bindings[0] = createInfo.Bindings[0];
+    bindings[0] = baseBinding;
     for (var i = 0; i < bindingCount; i++)
     {
-      var binding = frag.Bindings[i];
+      var binding = Bindings[i];
       bindings[i + 1] = new VkDescriptorSetLayoutBinding
       {
         Binding = i + 1,
@@ -85,25 +106,23 @@ public class ShaderEx : ShaderReference, IBinder
         StageFlags = VkShaderStageFlags.FragmentBit,
       };
     }
-    createInfo.Bindings = bindings;
-    return device.CreateDescriptorSetLayout(createInfo, allocator);
+    return device.CreateDescriptorSetLayout(
+      new DescriptorSetLayoutEx.CreateInfo { Bindings = bindings }, allocator);
   }
 
-  public static unsafe void GaugeUpdateDescriptorSets(
-    Device device,
-    ReadOnlySpan<VkWriteDescriptorSet> pDescriptorWrites,
-    ReadOnlySpan<VkCopyDescriptorSet> pDescriptorCopies,
-    GaugeComponent component)
+  public static void UpdateDescriptorSets(
+    ShaderReference shader, Device device, ReadOnlySpan<VkWriteDescriptorSet> defaultWrites)
   {
-    if (component.FragmentShader.Get() is not ShaderEx frag)
-    {
-      device.UpdateDescriptorSets(pDescriptorWrites, pDescriptorCopies);
-      return;
-    }
-
-    var bindingCount = frag.Bindings.Count;
+    if (shader.Get() is ShaderEx frag)
+      frag.UpdateDescriptorSets(device, defaultWrites[0]);
+    else
+      device.UpdateDescriptorSets(defaultWrites, []);
+  }
+  public unsafe void UpdateDescriptorSets(Device device, VkWriteDescriptorSet baseWrite)
+  {
+    var bindingCount = Bindings.Count;
     Span<int> writeCounts = [0, 0, 0];
-    foreach (var binding in frag.Bindings)
+    foreach (var binding in Bindings)
       writeCounts[(int)TypeWriteType(binding.DescriptorType)] += binding.DescriptorCount;
 
     VkDescriptorImageInfo* imageInfos =
@@ -116,12 +135,12 @@ public class ShaderEx : ShaderReference, IBinder
     Span<VkWriteDescriptorSet> writes = stackalloc VkWriteDescriptorSet[bindingCount + 1];
     Span<int> writeIndices = [0, 0, 0];
 
-    writes[0] = pDescriptorWrites[0];
+    writes[0] = baseWrite;
     var dset = writes[0].DstSet;
 
     for (var i = 0; i < bindingCount; i++)
     {
-      var binding = frag.Bindings[i];
+      var binding = Bindings[i];
       var wtype = TypeWriteType(binding.DescriptorType);
       var start = writeIndices[(int)wtype];
       var count = binding.DescriptorCount;
@@ -148,19 +167,21 @@ public class ShaderEx : ShaderReference, IBinder
       writeIndices[(int)wtype] += count;
     }
 
-    device.UpdateDescriptorSets(writes, pDescriptorCopies);
+    device.UpdateDescriptorSets(writes, []);
   }
 
-  private const int TYPE_COUNT = 2;
+  private const int TYPE_COUNT = 3;
   private static readonly VkDescriptorType[] DESCRIPTOR_TYPES =
   [
     VkDescriptorType.CombinedImageSampler,
     VkDescriptorType.UniformBufferDynamic,
+    VkDescriptorType.InputAttachment,
   ];
   private static int TypeIndex(VkDescriptorType type) => type switch
   {
     VkDescriptorType.CombinedImageSampler => 0,
     VkDescriptorType.UniformBufferDynamic => 1,
+    VkDescriptorType.InputAttachment => 2,
     _ => throw new NotSupportedException($"{type}"),
   };
 
@@ -169,6 +190,7 @@ public class ShaderEx : ShaderReference, IBinder
   {
     VkDescriptorType.CombinedImageSampler => WriteType.ImageInfo,
     VkDescriptorType.UniformBufferDynamic => WriteType.BufferInfo,
+    VkDescriptorType.InputAttachment => WriteType.ImageInfo,
     _ => throw new NotSupportedException($"{type}"),
   };
 }

@@ -1,0 +1,3 @@
+<Assets>
+  <Shader Id="GaugeVertexPost" Path="GaugeVertexPost.vert" />
+</Assets>
