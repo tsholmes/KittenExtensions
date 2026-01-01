@@ -122,6 +122,40 @@ internal static class Patches
     if (__instance is GaugeCanvasEx canvasEx && canvasEx.HasPost)
       canvasEx.PostRenderer.Render(commandBuffer, activeViewport);
   }
+
+  [HarmonyPatch(typeof(Program), "RenderGame"), HarmonyTranspiler, HarmonyDebug]
+  internal static IEnumerable<CodeInstruction> Program_RenderGame_Transpile(
+    IEnumerable<CodeInstruction> instructions)
+  {
+    var matcher = new CodeMatcher(instructions);
+
+    matcher.MatchStartForward(
+      CodeMatch.Calls(() => default(ImGuiBackendVulkanImpl).RenderDrawData(default)));
+    matcher.ThrowIfInvalid("could not find ImGuiBackendVulkanImpl.RenderDrawData call in Program.RenderGame");
+
+    matcher.MatchStartBackwards(
+      CodeMatch.Calls(() => default(CommandBuffer).BeginRenderPass(default, default)));
+    matcher.ThrowIfInvalid("could not find CommandBuffer.BeginRenderPass call in Program.RenderGame");
+
+    matcher.RemoveInstruction();
+    matcher.InsertAndAdvance(CodeInstruction.Call(() => ImGuiPreRender(default, default, default)));
+
+    return matcher.Instructions();
+  }
+
+  private static void ImGuiPreRender(
+    CommandBuffer commandBuffer, in VkRenderPassBeginInfo beginInfo, VkSubpassContents contents)
+  {
+    ImGuiRenderers.Render(Program.GetRenderer(), commandBuffer);
+
+    commandBuffer.BeginRenderPass(in beginInfo, contents);
+  }
+
+  [HarmonyPatch(typeof(Program), nameof(Program.RebuildRenderer)), HarmonyPostfix]
+  internal static void Program_RebuildRenderer_Postfix()
+  {
+    ImGuiRenderers.RebuildAll();
+  }
 }
 
 [HarmonyPatch]

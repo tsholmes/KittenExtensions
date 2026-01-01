@@ -9,7 +9,7 @@
     <PackageReference Include="Lib.Harmony" Version="2.4.2" />
 
     <ModFile Include="$(OutputPath)\$(ModName).dll" />
-    <ModFile Include="..\Content\*.*" />
+    <ModFile Include="..\Content\**\*" />
 
     <_KsaAssemblies Include="$(KSADir)Brutal*.dll" Path="%(FullPath)" />
     <_KsaAssemblies Include="$(KSADir)KSA.dll" Path="%(FullPath)" />
@@ -18,9 +18,9 @@
     <Reference Include="@(_KsaAssemblies->'%(FileName)')" HintPath="%(Path)" Private="False" />
 
     <_ModFiles Include="@(ModFile)">
-      <Name>%(FileName)%(Extension)</Name>
+      <Name>%(RecursiveDir)%(FileName)%(Extension)</Name>
       <Src>%(FullPath)</Src>
-      <Dest>$(ModDir)%(DestDir)%(FileName)%(Extension)</Dest>
+      <Dest>$(ModDir)%(DestDir)%(RecursiveDir)%(FileName)%(Extension)</Dest>
     </_ModFiles>
   </ItemGroup>
 </Project>

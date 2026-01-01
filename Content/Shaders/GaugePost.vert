@@ -1,5 +1,9 @@
 #version 450
 
+// Gauge post-processing vertex shader
+//   no inputs
+//   produces 4 triangle-strip vertices
+
 layout (location = 0) out vec2 outUV;
 
 void main()

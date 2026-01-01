@@ -6,6 +6,7 @@ Current Features:
 - Allows adding new xml asset types that can be used by any mod XML
 - Adds a `<ShaderEx>` asset that allows adding additional texture and uniform buffer bindings to the fragment shader of a gauge component
 - Adds a `<GaugeCanvasEx>` asset that allows adding a post-processing shader to the rendered gauge
+- Adds a `<ImGuiShader>` asset that allows running a custom shader for a specific window
 
 ## Installation
 
@@ -170,7 +171,7 @@ Buffers can be shared between shaders by specifying `Id` without `Size`.
 
 ## GaugeCanvas Post-Processing
 
-To add a post-processing shader to a Gauge, use the `<GaugeCanvasEx>` element and add a vertex and fragment shader to it. The included `GaugeVertexPost` vertex shader draws one rect covering the entire gauge, and can be used in most cases. The fragment shader is a `ShaderEx` asset that will have `layout(set=1, binding=0)` bound to the rendered gauge canvas.
+To add a post-processing shader to a Gauge, use the `<GaugeCanvasEx>` element and add a vertex and fragment shader to it. The included `GaugeVertexPost` vertex shader draws one rect covering the entire gauge, and can be used in most cases. The fragment shader is a `ShaderEx` asset that will have `layout(set=1, binding=0)` bound to the rendered gauge canvas, with custom bindings starting at `layout(set=1, binding=1)`.
 
 ```xml
 <Assets>
@@ -193,3 +194,76 @@ void main()
   outColor = textureLod(gaugeCanvas, inUv, 0);
 }
 ```
+
+## ImGui Post-Processing
+
+To add a post-processing shader to an ImGui window, use the `<ImGuiShader>` asset with a vertex and fragment shader specified. The included `ImGuiVertexPost` vertex shader draws one rect covering the bounding box of the imgui rendering calls, and can be used in most cases. The fragment shader is a `ShaderEx` asset that will have `layout(set=0, binding=0)` bound to the rendered ImGui window, with custom bindings starting at `layout(set=0, binding=1)`.
+
+```xml
+<Assets>
+  <ImGuiShader Id="MyImGuiShader">
+    <Vertex Id="ImGuiVertexPost" />
+    <Fragment Path="MyImGuiShader.frag" />
+  </ImGuiShader>
+</Assets>
+```
+
+```glsl
+#version 450 core
+
+layout(location = 0) out vec4 outColor;
+layout(set=0, binding=0) uniform sampler2D imguiTex; // rendered ImGui Window
+layout(location = 0) in struct {
+  vec2 Px; // screen pixel coord
+  vec2 Uv; // screen uv coord
+} In;
+layout(location = 4) flat in vec4 PxRect; // bounding pixel rect for window
+layout(location = 8) flat in vec4 UvRect; // bounding uv rect for window
+
+void main()
+{
+  outColor = textureLod(imguiTex, In.Uv, 0);
+}
+```
+
+Then add this helper class to your assembly[^kximgui].
+```cs
+using Brutal;
+using Brutal.ImGuiApi;
+using Brutal.Numerics;
+using KSA;
+
+namespace KittenExtensions;
+
+internal static class KxImGui
+{
+  internal static readonly KeyHash MarkerKey = KeyHash.Make("KxImGuiShader");
+  internal static unsafe void CustomShader(KeyHash key)
+  {
+    var data = new uint2(MarkerKey.Code, key.Code);
+    ImGui.GetWindowDrawList().AddCallback(DummyCallback, (nint)(&data), ByteSize.Of<uint2>().Bytes);
+  }
+  private static unsafe void DummyCallback(ImDrawList* parent_list, ImDrawCmd* cmd) { }
+}
+```
+
+Then in your ImGui code, call the `KxImGui.CustomShader` utility to set the custom shader for the currently rendering ImGui window (from the most recent `ImGui.Begin` call).
+
+```cs
+// matches Id attribute of the <ImGuiShader> element
+// save this value so you aren't rehashing every frame
+KeyHash myShader = KeyHash.Make("MyImGuiShader");
+
+ImGui.Begin("My Window");
+KxImGui.CustomShader(myShader);
+
+// your window contents
+
+ImGui.End();
+```
+
+### Limitations
+
+The rendering data from ImGui does not include any window information, only a list of `ImDrawList`, so the shader will only be run on the draw list of the rendering window. This does not include child windows, so child window contents will be overlayed on top of the parent window after the custom shader is run.
+
+[^kximgui]: The marker key must be the hash of the string `KxImGuiShader`, but this class does not need to exist in this form in order to function, it is just a utility.

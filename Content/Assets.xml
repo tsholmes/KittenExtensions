@@ -1,3 +1,8 @@
 <Assets>
-  <Shader Id="GaugeVertexPost" Path="GaugeVertexPost.vert" />
+  <Shader Id="GaugeVertexPost" Path="Shaders/GaugePost.vert" />
+  <Shader Id="ImGuiVertexPost" Path="Shaders/ImGuiPost.vert" />
+  <!-- <ImGuiShader Id="ImGuiCrtExample">
+    <Vertex Id="ImGuiVertexPost" />
+    <Fragment Path="Shaders/ImGuiCrt.frag" />
+  </ImGuiShader> -->
 </Assets>
