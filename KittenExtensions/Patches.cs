@@ -7,6 +7,7 @@ using Brutal.ImGuiApi;
 using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
 using HarmonyLib;
+using KittenExtensions.Patch;
 using KSA;
 
 namespace KittenExtensions;
@@ -156,6 +157,15 @@ internal static class Patches
   {
     ImGuiRenderers.RebuildAll();
   }
+
+  [HarmonyPatch(typeof(ModLibrary), nameof(ModLibrary.PrepareAll)), HarmonyPrefix]
+  internal static void ModLibrary_PrepareAll_Prefix()
+  {
+    // PrepareManifest is called by StarMap, so we shouldn't need to do this here, but try anyways
+    if (!ModLibrary.PrepareManifest())
+      return;
+    XmlPatcher.OnPrepare();
+  }
 }
 
 [HarmonyPatch]
@@ -228,8 +238,8 @@ internal static class XmlLoaderPatch
   private static readonly MethodInfo SourceMethod = typeof(XmlLoader).GetMethod(nameof(XmlLoader.Load)) ??
     throw new InvalidOperationException($"Could not find XmlLoader source method");
 
-  private static readonly MethodInfo ReplacementMethod = typeof(AssetEx).GetMethod(nameof(AssetEx.Load)) ??
-    throw new InvalidOperationException("Could not find AssetEx replacement method");
+  private static readonly MethodInfo ReplacementMethod = typeof(XmlPatcher).GetMethod(nameof(XmlPatcher.Load)) ??
+    throw new InvalidOperationException("Could not find XmlPatcher replacement method");
 
   [HarmonyTranspiler]
   internal static IEnumerable<CodeInstruction> Transpile(IEnumerable<CodeInstruction> instructions)

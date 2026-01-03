@@ -27,28 +27,7 @@ public static class AssetEx
     }
   }
 
-  // full replacement of XmlLoader.Load
-  public static T Load<T>(string filePath, Mod mod) where T : ILibraryData
-  {
-    var result = default(T);
-    try
-    {
-      if (File.Exists(filePath))
-      {
-        var serializer = GetSerializer<T>();
-        using var f = File.OpenRead(filePath);
-        result = serializer.Deserialize(f) is T val ? val : default;
-      }
-    }
-    catch (Exception ex)
-    {
-      DefaultCategory.Log.Error(ex);
-    }
-    result?.OnDataLoad(mod);
-    return result;
-  }
-
-  private static XmlSerializer GetSerializer<T>()
+  public static XmlSerializer GetSerializer<T>()
   {
     var type = typeof(T);
     if (serializers.TryGetValue(type, out var serializer))

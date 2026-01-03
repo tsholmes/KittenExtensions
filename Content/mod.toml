@@ -1,26 +1,5 @@
-# this file is the manifest definition for a mod (packed or unpacked)
-# each 'mod' needs to have one to tell the game how to deserialize
-
-# the 'id' of the mod is the folder name
-
 # the name for the mod
 name = "KittenExtensions"
 
-# these xml definitions are loaded for planet LODs
-planetMeshes = [ ]
-
-# these xml definitions are loaded for celestial system templates
-systems = [ ]
-
-# asset xml definitions allow generic pools of assets to be loaded for use through the project, such as meshes and textures
 assets = [ "Assets.xml" ]
-
-# data to load for star instances
-starBinaries = [ ]
-
-# fonts the player can select
-fonts = [ ]
-
-# camera map command is listed twice here as the first call sets the camera defaults.
-[console]
-onLoad = [ ]
+patches = [ "TestPatch.xml" ]
