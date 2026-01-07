@@ -1,4 +1,5 @@
 
+using System.Collections.Generic;
 using System.Xml;
 using System.Xml.Serialization;
 using System.Xml.XPath;
@@ -12,12 +13,12 @@ public class XmlIfOp : XmlOp
   [XmlElement("None")]
   public XmlOpCollection None = new();
 
-  public override void Execute(XPathNavigator nav)
+  public override IEnumerable<OpExecution> Execute(OpExecContext ctx)
   {
-    if (IsAny(nav, Path))
-      Any.Execute(nav);
+    if (IsAny(ctx.Nav, Path))
+      yield return ctx.Execution(Any);
     else
-      None.Execute(nav);
+      yield return ctx.Execution(None);
   }
 
   public static bool IsAny(XPathNavigator nav, string path) => nav.Evaluate(path) switch
@@ -32,18 +33,20 @@ public class XmlIfOp : XmlOp
 
 public class XmlIfAnyOp : XmlOpCollection
 {
-  public override void Execute(XPathNavigator nav)
+  public override IEnumerable<OpExecution> Execute(OpExecContext ctx)
   {
-    if (XmlIfOp.IsAny(nav, Path))
-      base.Execute(nav);
+    if (XmlIfOp.IsAny(ctx.Nav, Path))
+      return base.Execute(ctx);
+    return [];
   }
 }
 
 public class XmlIfNoneOp : XmlOpCollection
 {
-  public override void Execute(XPathNavigator nav)
+  public override IEnumerable<OpExecution> Execute(OpExecContext ctx)
   {
-    if (!XmlIfOp.IsAny(nav, Path))
-      base.Execute(nav);
+    if (!XmlIfOp.IsAny(ctx.Nav, Path))
+      return base.Execute(ctx);
+    return [];
   }
 }

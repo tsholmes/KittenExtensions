@@ -58,7 +58,7 @@ public static partial class XmlPatcher
     if (DebugEnabled())
     {
       RootDoc.Save(Path.Combine(Constants.DocumentsFolderPath, "root.xml"));
-      var patchTask = new PatchTask();
+      var patchTask = new PopupTask(new PatchDebugPopup());
       while (patchTask.Show)
         patchTask.OnFrame();
     }
@@ -69,36 +69,23 @@ public static partial class XmlPatcher
   private static List<XmlElement> ChildElementList(XmlNode node, string path) =>
     new(node.SelectNodes(path).Cast<XmlElement>());
 
-  private static List<XmlElement> ModNodes = [];
-  private static List<XmlElement> CurPatches = [];
-  private static XmlElement CurPatch;
-  private static XmlElement LastPatch;
-
-  private static IEnumerable<XmlElement> GetPatches()
+  private static IEnumerable<XmlPatch> GetPatches()
   {
-    ModNodes = ChildElementList(RootNode, "Mod");
-    foreach (var mod in ModNodes)
-    {
-      CurPatches = ChildElementList(mod, "Patch");
-      foreach (var patch in CurPatches)
-      {
-        LastPatch = CurPatch;
-        yield return CurPatch = patch;
-      }
-    }
-    LastPatch = CurPatch;
-    CurPatch = null;
+    foreach (var mod in ChildElementList(RootNode, "Mod"))
+      foreach (var patch in ChildElementList(mod, "Patch"))
+        yield return DeserializePatch(patch);
   }
 
   private static void RunPatches()
   {
+    var ctx = new DefaultOpExecContext(RootNode.CreateNavigator());
     foreach (var patch in GetPatches())
     {
-      RunPatch(patch);
+      new PatchExecutor(ctx.Execution(patch)).ToEnd();
     }
   }
 
-  private static void RunPatch(XmlElement element)
+  private static XmlPatch DeserializePatch(XmlElement element)
   {
     var serializer = AssetEx.GetSerializer<XmlPatch>();
     XmlPatch patch;
@@ -108,7 +95,35 @@ public static partial class XmlPatcher
     }
     XmlOpElementPopulator.Populate(element, patch);
 
-    patch.Execute(RootNode.CreateNavigator());
+    patch.Id = $"{(element.ParentNode as XmlElement)?.GetAttribute("Id")}/{element.GetAttribute("Path")}";
+    return patch;
+  }
+
+  private static void RunPatch(XmlElement element, OpExecContext ctx)
+  {
+    var serializer = AssetEx.GetSerializer<XmlPatch>();
+    XmlPatch patch;
+    using (var reader = new XmlNodeReader(element))
+    {
+      patch = (XmlPatch)serializer.Deserialize(reader);
+    }
+    XmlOpElementPopulator.Populate(element, patch);
+
+    patch.Id = $"{(element.ParentNode as XmlElement)?.GetAttribute("Id")}/{element.GetAttribute("Path")}";
+
+    RunOp(ctx.Execution(patch));
+  }
+
+  public static void RunOp(OpExecution exec)
+  {
+    if (exec.Op is IXmlLeafOp leaf)
+    {
+      foreach (var action in leaf.ExecuteLeaf(exec.Context))
+        action.Run();
+    }
+    else
+      foreach (var subExec in exec.Op.Execute(exec.Context))
+        RunOp(subExec);
   }
 
   private static void LoadData()

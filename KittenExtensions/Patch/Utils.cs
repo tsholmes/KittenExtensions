@@ -1,6 +1,13 @@
 
 using System;
 using System.Xml;
+using Brutal.GlfwApi;
+using Brutal.ImGuiApi;
+using Brutal.VulkanApi;
+using Brutal.VulkanApi.Abstractions;
+using Core;
+using KSA;
+using RenderCore;
 
 namespace KittenExtensions.Patch;
 
@@ -8,6 +15,17 @@ public ref struct LineBuilder(Span<char> buf)
 {
   private readonly Span<char> buf = buf;
   private int length = 0;
+
+  public int Length
+  {
+    get => length;
+    set
+    {
+      if (value >= length)
+        throw new IndexOutOfRangeException();
+      length = value;
+    }
+  }
 
   public ReadOnlySpan<char> Line => buf[..length];
 
@@ -17,6 +35,27 @@ public ref struct LineBuilder(Span<char> buf)
   {
     data.CopyTo(buf[length..]);
     length += data.Length;
+  }
+
+  public void AddFirstLine(ReadOnlySpan<char> data)
+  {
+    var nl = data.IndexOf('\n');
+    if (nl >= 0)
+    {
+      if (nl > 0 && data[nl] == '\r')
+        nl--;
+      data = data[..nl];
+    }
+    Add(data);
+    if (nl >= 0)
+      Add("...");
+  }
+
+  public void AddQuotedFirstLine(ReadOnlySpan<char> data)
+  {
+    Add('"');
+    AddFirstLine(data);
+    Add('"');
   }
 
   public void Add(char c)
@@ -29,16 +68,76 @@ public ref struct LineBuilder(Span<char> buf)
     val.TryFormat(buf[length..], out var len, fmt, null);
     length += len;
   }
-}
 
-public ref struct XmlDisplayBuilder(Span<char> buf)
-{
-  private LineBuilder line = new(buf);
+  public void AddNodePath(XmlNode node, XmlNode relTo = null) => AddNodePathInternal(node, relTo);
 
-  public ReadOnlySpan<char> Line => line.Line;
+  private bool AddNodePathInternal(XmlNode node, XmlNode relTo)
+  {
+    if (node == null || node == relTo)
+      return false;
+    if (node.ParentNode != null && AddNodePathInternal(node.ParentNode, relTo))
+      Add('/');
+    switch (node)
+    {
+      case XmlElement el:
+        Add(el.Name);
+        if (el.GetAttributeNode("Id") is XmlAttribute idAttr)
+        {
+          Add("[@Id=\"");
+          Add(idAttr.Value);
+          Add("\"]");
+        }
+        break;
+      case XmlText text:
+        Add("text()");
+        break;
+      case XmlProcessingInstruction proc:
+        Add("processing-instruction(\"");
+        Add(proc.Name);
+        Add("\")");
+        break;
+      case XmlAttribute attr:
+        Add('@');
+        Add(attr.Name);
+        break;
+      default:
+        break;
+    }
+    return true;
+  }
 
-  public void Reset() =>
-      line.Clear();
+  public void NodeOneLine(XmlNode node)
+  {
+    switch (node)
+    {
+      case XmlElement el:
+        ElementOpen(el, !el.HasChildNodes);
+        break;
+      case XmlAttribute attr:
+        Add('@');
+        Add(attr.Name);
+        Add('=');
+        AddQuotedFirstLine(attr.Value);
+        break;
+      case XmlComment comment:
+        Add("<!-- ");
+        AddFirstLine(comment.Value);
+        Add(" -->");
+        break;
+      case XmlCharacterData text:
+        AddQuotedFirstLine(text.Value);
+        break;
+      case XmlProcessingInstruction proc:
+        Add("<?");
+        Add(proc.Name);
+        Add(' ');
+        AddFirstLine(proc.Value);
+        Add("?>");
+        break;
+      default:
+        break;
+    }
+  }
 
   public void NodeInline(XmlNode node)
   {
@@ -51,7 +150,7 @@ public ref struct XmlDisplayBuilder(Span<char> buf)
     else if (node is XmlProcessingInstruction proc)
       ProcInline(proc);
     else
-      throw new NotImplementedException($"{node.GetType().Name}");
+      Add("???");
   }
 
   public void ElementInline(XmlElement el)
@@ -76,23 +175,23 @@ public ref struct XmlDisplayBuilder(Span<char> buf)
 
   public void TextInline(XmlText text)
   {
-    line.Add(text.Value);
+    Add(text.Value);
   }
 
   public void CommentInline(XmlComment comment)
   {
-    line.Add("<!--");
-    line.Add(comment.Value);
-    line.Add("-->");
+    Add("<!--");
+    Add(comment.Value);
+    Add("-->");
   }
 
   public void ProcInline(XmlProcessingInstruction proc)
   {
-    line.Add("<?");
-    line.Add(proc.Name);
-    line.Add(' ');
-    line.Add(proc.Value);
-    line.Add("?>");
+    Add("<?");
+    Add(proc.Name);
+    Add(' ');
+    Add(proc.Value);
+    Add("?>");
   }
 
   public void ElementOpen(XmlElement el, bool selfClose = false)
@@ -104,23 +203,23 @@ public ref struct XmlDisplayBuilder(Span<char> buf)
 
   public void ElementClose(ReadOnlySpan<char> name)
   {
-    line.Add("</");
-    line.Add(name);
-    line.Add('>');
+    Add("</");
+    Add(name);
+    Add('>');
   }
 
   private void ElOpenStart(ReadOnlySpan<char> name)
   {
-    line.Add('<');
-    line.Add(name);
+    Add('<');
+    Add(name);
   }
 
   private void ElEnd(bool selfClose = false)
   {
     if (selfClose)
-      line.Add(" />");
+      Add(" />");
     else
-      line.Add('>');
+      Add('>');
   }
 
   private void ElAttrsInline(XmlAttributeCollection attrs)
@@ -128,16 +227,92 @@ public ref struct XmlDisplayBuilder(Span<char> buf)
     for (var i = 0; i < attrs.Count; i++)
     {
       var attr = attrs[i];
-      line.Add(' ');
+      Add(' ');
       ElAttr(attr.Name, attr.Value);
     }
   }
 
   private void ElAttr(ReadOnlySpan<char> name, ReadOnlySpan<char> value)
   {
-    line.Add(name);
-    line.Add("=\"");
-    line.Add(value);
-    line.Add('"');
+    Add(name);
+    Add("=\"");
+    Add(value);
+    Add('"');
+  }
+}
+
+// copied from SelectSystem
+public class PopupTask(Popup popup) : SetupTaskBase
+{
+  private readonly Renderer renderer = Program.GetRenderer();
+  private readonly Popup popup = popup;
+
+  public bool Show => popup.Active;
+
+  public void DrawUi()
+  {
+    if (!Show)
+      return;
+    ImGuiHelper.BlankBackground();
+    Popup.DrawAll();
+  }
+
+  public unsafe void OnFrame()
+  {
+    if (!Program.IsMainThread())
+      return;
+    Glfw.PollEvents();
+    if (Program.GetWindow().ShouldClose)
+    {
+      Environment.Exit(0);
+    }
+    else
+    {
+      ImGuiBackend.NewFrame();
+      ImGui.NewFrame();
+      ImGuiHelper.StartFrame();
+      DrawUi();
+      ImGui.Render();
+      if (ImGui.GetIO().ConfigFlags.HasFlag(ImGuiConfigFlags.ViewportsEnable))
+      {
+        ImGui.UpdatePlatformWindows();
+        ImGui.RenderPlatformWindowsDefault(IntPtr.Zero, IntPtr.Zero);
+      }
+      (FrameResult result, AcquiredFrame acquiredFrame1) = renderer.TryAcquireNextFrame();
+      AcquiredFrame acquiredFrame2 = acquiredFrame1;
+      if (result != FrameResult.Success)
+        PartialRebuild();
+      else
+      {
+        acquiredFrame1 = acquiredFrame2;
+        (FrameResources resources, CommandBuffer commandBuffer) = acquiredFrame1;
+        VkSubpassContents contents = VkSubpassContents.Inline;
+        VkRenderPassBeginInfo pRenderPassBegin = new()
+        {
+          RenderPass = Program.MainPass.Pass,
+          Framebuffer = resources.Framebuffer,
+          RenderArea = new VkRect2D(renderer.Extent),
+          ClearValues = (VkClearValue*)Program.MainPass.ClearValues.Ptr,
+          ClearValueCount = 2
+        };
+        commandBuffer.Reset();
+        commandBuffer.Begin(VkCommandBufferUsageFlags.OneTimeSubmitBit);
+        commandBuffer.BeginRenderPass(in pRenderPassBegin, contents);
+        ImGuiBackend.Vulkan.RenderDrawData(commandBuffer);
+        commandBuffer.EndRenderPass();
+        commandBuffer.End();
+        if (renderer.TrySubmitFrame() == 0)
+          return;
+        PartialRebuild();
+      }
+    }
+  }
+
+  public void PartialRebuild()
+  {
+    renderer.Rebuild(GameSettings.GetPresentMode());
+    renderer.Device.WaitIdle();
+    Program.MainPass.Pass = renderer.MainRenderPass;
+    Program.ScheduleRendererRebuild();
   }
 }

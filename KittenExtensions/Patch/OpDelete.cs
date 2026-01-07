@@ -1,15 +1,18 @@
 
-using System.Xml.XPath;
+using System;
+using System.Collections.Generic;
 
 namespace KittenExtensions.Patch;
 
-public class XmlDeleteOp : XmlOp
+public class XmlDeleteOp : XmlOp, IXmlLeafOp
 {
-  public override void Execute(XPathNavigator nav)
+  public override IEnumerable<OpExecution> Execute(OpExecContext ctx) => throw new InvalidOperationException();
+
+  public IEnumerable<OpAction> ExecuteLeaf(OpExecContext ctx)
   {
-    foreach (var node in nav.Select(Path).ToNodeList())
-    {
-      node.ParentNode.RemoveChild(node);
-    }
+    var actions = new List<OpAction>();
+    foreach (var node in ctx.Nav.Select(Path).ToNodeList())
+      actions.Add(ctx.Action(OpActionType.Delete, node));
+    return actions;
   }
 }

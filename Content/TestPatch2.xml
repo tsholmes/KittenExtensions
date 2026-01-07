@@ -1,0 +1,19 @@
+<Patch>
+  <!-- run for each PlanetaryBody and AtmosphericBody anywhere in the GameData document -->
+  <With Path="(//PlanetaryBody | //AtmosphericBody)[Color]">
+    <If Path="sum(Color/@*) > 1.5">
+      <Any>
+        <!-- if R+G+B of color is >1.5 make each RGB val brighter -->
+        <With Path="Color/@*">
+          <Copy From="1-(1-.)*0.5" />
+        </With>
+      </Any>
+      <None>
+        <!-- otherwise make each RGB val darker -->
+        <With Path="Color/@*">
+          <Copy From=".*0.5" />
+        </With>
+      </None>
+    </If>
+  </With>
+</Patch>
