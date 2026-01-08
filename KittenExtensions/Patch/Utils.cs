@@ -1,5 +1,6 @@
 
 using System;
+using System.Collections;
 using System.Xml;
 using Brutal.GlfwApi;
 using Brutal.ImGuiApi;
@@ -88,7 +89,7 @@ public ref struct LineBuilder(Span<char> buf)
           Add("\"]");
         }
         break;
-      case XmlText text:
+      case XmlText:
         Add("text()");
         break;
       case XmlProcessingInstruction proc:
@@ -104,6 +105,55 @@ public ref struct LineBuilder(Span<char> buf)
         break;
     }
     return true;
+  }
+
+  public void AddXPathVal(object obj)
+  {
+    switch (obj)
+    {
+      case string srcString:
+        AddQuotedFirstLine(srcString);
+        break;
+      case bool srcBool:
+        Add(srcBool ? "true" : "false");
+        break;
+      case double srcDouble:
+        Add(srcDouble, "f");
+        break;
+      case IList srcList:
+        if (srcList.Count == 1)
+        {
+          switch (srcList[0])
+          {
+            case string elStr:
+              AddQuotedFirstLine(elStr);
+              break;
+            case XmlNode elNode:
+              NodeOneLine(elNode);
+              break;
+          }
+        }
+        else
+        {
+          for (var i = 0; i < 3 && i < srcList.Count; i++)
+          {
+            switch (srcList[i])
+            {
+              case string elStr:
+                Add("\n  ");
+                AddQuotedFirstLine(elStr);
+                break;
+              case XmlNode elNode:
+                Add("\n  ");
+                NodeOneLine(elNode);
+                break;
+            }
+          }
+          if (srcList.Count > 3)
+            Add("\n  ...");
+        }
+        break;
+    }
   }
 
   public void NodeOneLine(XmlNode node)
@@ -160,11 +210,11 @@ public ref struct LineBuilder(Span<char> buf)
 
     if (!el.HasChildNodes)
     {
-      ElEnd(true);
+      ElOpenEnd(true);
       return;
     }
 
-    ElEnd();
+    ElOpenEnd();
 
     var children = el.ChildNodes;
     for (var i = 0; i < children.Count; i++)
@@ -198,7 +248,7 @@ public ref struct LineBuilder(Span<char> buf)
   {
     ElOpenStart(el.Name);
     ElAttrsInline(el.Attributes);
-    ElEnd(selfClose);
+    ElOpenEnd(selfClose);
   }
 
   public void ElementClose(ReadOnlySpan<char> name)
@@ -208,13 +258,13 @@ public ref struct LineBuilder(Span<char> buf)
     Add('>');
   }
 
-  private void ElOpenStart(ReadOnlySpan<char> name)
+  public void ElOpenStart(ReadOnlySpan<char> name)
   {
     Add('<');
     Add(name);
   }
 
-  private void ElEnd(bool selfClose = false)
+  public void ElOpenEnd(bool selfClose = false)
   {
     if (selfClose)
       Add(" />");
@@ -232,7 +282,7 @@ public ref struct LineBuilder(Span<char> buf)
     }
   }
 
-  private void ElAttr(ReadOnlySpan<char> name, ReadOnlySpan<char> value)
+  public void ElAttr(ReadOnlySpan<char> name, ReadOnlySpan<char> value)
   {
     Add(name);
     Add("=\"");

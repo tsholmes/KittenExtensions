@@ -2,6 +2,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Text;
 using System.Xml;
 using System.Xml.XPath;
 using Brutal.ImGuiApi;
@@ -76,7 +77,6 @@ public static partial class XmlPatcher
       xpathResult = null;
     }
 
-    private ImDrawListPtr parentDl;
     protected override void OnDrawUi()
     {
       var padding = new float2(50, 50);
@@ -88,17 +88,11 @@ public static partial class XmlPatcher
       ImGui.BeginPopup(
         title, ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.Popup);
 
-      parentDl = ImGui.GetWindowDrawList();
+      var frameX = new float2(ImGui.GetStyle().FramePadding.X, 0);
 
-      var windowStart = ImGui.GetCursorScreenPos();
-      var contentWidth = ImGui.GetContentRegionAvail().X;
-      var spacing = ImGui.GetStyle().ItemSpacing;
-      var frame = ImGui.GetStyle().FramePadding;
-      var halfWidth = (contentWidth - spacing.X) / 2;
-      var centerX = windowStart.X + halfWidth + spacing.X;
-
-      ImGui.AlignTextToFramePadding();
-      ImGui.Text("KittenExtensions Patch Debug");
+      const string titleText = "KittenExtensions Patch Debug";
+      ImGuiEx.CenterTextCursor(ImGuiEx.AvailableSpace(), titleText);
+      ImGui.Text(titleText);
 
       if (executor.LastState != PatchExecutor.ExecState.End)
       {
@@ -128,21 +122,26 @@ public static partial class XmlPatcher
 
       ImGui.Separator();
 
-      var togglesY = ImGui.GetCursorScreenPos().Y;
+      var (left, right) = ImGuiEx.AvailableSpace().SplitX();
 
       if (newNode && HasError)
         execTab = 0;
 
-      ImGui.SetCursorScreenPos(new(windowStart.X + frame.X, togglesY));
+      ImGui.SetCursorScreenPos(left.Start + frameX);
       if (Selectable("Exec Tree", execTab == 0, new float2(150, 0))) execTab = 0;
       if (Selectable("XPath Tester", execTab == 1, new float2(150, 0), sameLine: true)) execTab = 1;
-      ImGui.SetNextWindowPos(new(windowStart.X, ImGui.GetCursorScreenPos().Y));
-      ImGui.BeginChild("Exec", new(halfWidth, ImGui.GetContentRegionAvail().Y), ImGuiChildFlags.Borders);
-      switch (execTab)
+
+      (_, left) = left.CutY();
+      ImGui.SetNextWindowPos(left.Start);
+      ImGui.BeginChild("Exec", left.Size, ImGuiChildFlags.Borders);
+      using (var bg = ImGuiEx.SplitBg())
       {
-        case 0: DrawExecTree(context, null); break;
-        case 1: DrawXPathTest(); break;
-        default: break;
+        switch (execTab)
+        {
+          case 0: DrawExecTree(context, null); break;
+          case 1: DrawXPathTest(); break;
+          default: break;
+        }
       }
       ImGui.EndChild();
 
@@ -152,7 +151,7 @@ public static partial class XmlPatcher
         followTarget = false;
       }
 
-      ImGui.SetCursorScreenPos(new(centerX + frame.X, togglesY));
+      ImGui.SetCursorScreenPos(right.Start + frameX);
       if (Selectable("Follow Target", followTarget, new float2(150, 0)))
       {
         followTarget = !followTarget;
@@ -165,12 +164,14 @@ public static partial class XmlPatcher
         followTarget &= !followPatch;
         UpdatePath();
       }
-      ImGui.SetNextWindowPos(new(centerX, ImGui.GetCursorScreenPos().Y));
-      ImGui.BeginChild("Doc", new(halfWidth, ImGui.GetContentRegionAvail().Y), ImGuiChildFlags.Borders);
-      DrawDocTree(RootNode, 0, true, false);
+      (_, right) = right.CutY();
+      ImGui.SetNextWindowPos(right.Start);
+      ImGui.BeginChild("Doc", right.Size, ImGuiChildFlags.Borders);
+      using (var bg = ImGuiEx.SplitBg())
+      {
+        DrawDocTree(RootNode, 0, curNode != null, false);
+      }
       ImGui.EndChild();
-
-      parentDl = null;
 
       ImGui.EndPopup();
 
@@ -220,19 +221,11 @@ public static partial class XmlPatcher
 
     private void DrawExecTree(DebugOpExecContext ctx, DebugOpExecContext parent)
     {
-      const float LINE_WIDTH = 3;
-      const float X_SPACING = -4;
-      const float Y_SPACING = -4;
       var line = new LineBuilder(buffer);
       var pop = false;
       var open = true;
-      var highlight = false;
-      var underline = false;
-      var treeSpace = ImGui.GetTreeNodeToLabelSpacing();
-      var startCursor = ImGui.GetCursorScreenPos();
-      var contentRight = startCursor.X + ImGui.GetContentRegionAvail().X;
-      startCursor.X += treeSpace + X_SPACING;
-      var highlightCr = ImGui.ColorConvertFloat4ToU32(ImGui.GetStyleColorVec4(ImGuiCol.Button));
+      var outline = OutlineType.None;
+      var space = ImGuiEx.AvailableSpace();
       if (parent != null)
       {
         if (ctx.Type == ContextType.Patch && ctx.ContextPatch.Error == null)
@@ -240,20 +233,23 @@ public static partial class XmlPatcher
         var isCur = ctx.Type switch
         {
           ContextType.Patch => ctx.ContextPatch == executor.CurPatch,
-          ContextType.Exec => ctx.ContextExec == executor.CurExec,
+          ContextType.Exec => ctx.ContextExec == executor.CurExec && executor.CurAction == null,
           ContextType.Action => ctx.ContextAction == executor.CurAction,
           _ => false,
         };
-        highlight = isCur;
+        if (isCur)
+          outline |= OutlineType.Left;
 
         if (isCur && HasError)
-          highlightCr = ImColor8.Red;
+          outline = OutlineType.All;
 
         ReadOnlySpan<char> text;
 
         if (ctx.Type == ContextType.Patch)
         {
           text = ctx.ContextPatch.Id;
+          if (isCur)
+            outline = OutlineType.All;
         }
         else if (ctx.Type == ContextType.Nav)
         {
@@ -263,7 +259,14 @@ public static partial class XmlPatcher
         else if (ctx.Type == ContextType.Exec)
         {
           var op = ctx.ContextExec.Op;
-          underline = highlight && executor.LastState == PatchExecutor.ExecState.ExecEnd;
+          if (isCur)
+          {
+            outline |= executor.LastState switch
+            {
+              PatchExecutor.ExecState.ExecEnd => OutlineType.Bottom,
+              _ => OutlineType.Top,
+            };
+          }
           if (op is XmlPatch patch)
             text = patch.Id;
           else
@@ -275,7 +278,14 @@ public static partial class XmlPatcher
         else if (ctx.Type == ContextType.Action)
         {
           var action = ctx.ContextAction;
-          underline = highlight && executor.LastState == PatchExecutor.ExecState.ActionEnd;
+          if (isCur)
+          {
+            outline |= executor.LastState switch
+            {
+              PatchExecutor.ExecState.ActionEnd => OutlineType.Bottom,
+              _ => OutlineType.Top,
+            };
+          }
           line.Add(action.Type);
           line.Add(' ');
           line.AddNodePath(action.Target);
@@ -288,51 +298,7 @@ public static partial class XmlPatcher
             line.Add(pos);
             line.Add(' ');
           }
-          switch (action.Source)
-          {
-            case string srcString:
-              line.AddQuotedFirstLine(srcString);
-              break;
-            case bool srcBool:
-              line.Add(srcBool ? "true" : "false");
-              break;
-            case double srcDouble:
-              line.Add(srcDouble, "f");
-              break;
-            case IList srcList:
-              if (srcList.Count == 1)
-              {
-                switch (srcList[0])
-                {
-                  case string elStr:
-                    line.AddQuotedFirstLine(elStr);
-                    break;
-                  case XmlNode elNode:
-                    line.NodeOneLine(elNode);
-                    break;
-                }
-              }
-              else
-              {
-                for (var i = 0; i < 3 && i < srcList.Count; i++)
-                {
-                  switch (srcList[i])
-                  {
-                    case string elStr:
-                      line.Add("\n  ");
-                      line.AddQuotedFirstLine(elStr);
-                      break;
-                    case XmlNode elNode:
-                      line.Add("\n  ");
-                      line.NodeOneLine(elNode);
-                      break;
-                  }
-                }
-                if (srcList.Count > 3)
-                  line.Add("\n  ...");
-              }
-              break;
-          }
+          line.AddXPathVal(action.Source);
           text = line.Line;
         }
         else
@@ -340,14 +306,7 @@ public static partial class XmlPatcher
           text = "???";
         }
 
-        if (highlight && !underline)
-        {
-          var start = startCursor + new float2(LINE_WIDTH, 0);
-          var end = new float2(contentRight, start.Y + LINE_WIDTH);
-          parentDl.AddRectFilled(start, end, highlightCr);
-        }
-
-        if (highlight && newNode)
+        if (isCur && newNode)
           ImGui.SetScrollHereY();
 
         if (ctx.Children.Count == 0)
@@ -386,18 +345,15 @@ public static partial class XmlPatcher
       if (pop)
         ImGui.TreePop();
 
-      var endCursor = ImGui.GetCursorScreenPos() + new float2(treeSpace + X_SPACING, Y_SPACING);
-
-      if (highlight)
+      if (outline != 0)
       {
-        var end = endCursor + new float2(LINE_WIDTH, 0);
-        parentDl.AddRectFilled(startCursor, end, highlightCr);
-      }
-
-      if (underline)
-      {
-        var end = new float2(contentRight, endCursor.Y + LINE_WIDTH);
-        parentDl.AddRectFilled(endCursor, end, highlightCr);
+        const float OUTLINE_WIDTH = 3;
+        (space, _) = space.CutY();
+        space = space.TreeIndent().Expand(left: 4, bottom: -4);
+        if (HasError)
+          ImGuiEx.BgOutline(space, outline, OUTLINE_WIDTH, cr: ImColor8.Red);
+        else
+          ImGuiEx.BgOutline(space, outline, OUTLINE_WIDTH, styleCr: ImGuiCol.Button);
       }
     }
 
@@ -454,7 +410,6 @@ public static partial class XmlPatcher
             var node = resNodes[i];
             line.Clear();
             line.NodeOneLine(node);
-            var cursor = ImGui.GetCursorScreenPos();
             if (line.Length > 100)
             {
               line.Length = 100;
@@ -490,7 +445,7 @@ public static partial class XmlPatcher
       inCur |= isCur;
       if (isCur && newNode)
         ImGui.SetScrollHereY();
-      var start = ImGui.GetCursorScreenPos();
+      var space = ImGuiEx.AvailableSpace();
 
       if (node is XmlElement el)
       {
@@ -529,7 +484,7 @@ public static partial class XmlPatcher
       else
       {
         ImGui.PushTextWrapPos(ImGui.GetContentRegionAvail().X);
-        ImGui.PushStyleColor(ImGuiCol.Tab, NodeColor(node));
+        ImGui.PushStyleColor(ImGuiCol.Text, NodeColor(node));
 
         line.NodeInline(node);
         ImGui.TreeNodeEx(line.Line, LEAF_FLAGS);
@@ -540,16 +495,8 @@ public static partial class XmlPatcher
 
       if (isCur)
       {
-        var childDl = ImGui.GetWindowDrawList();
-        parentDl.PushClipRect(childDl.GetClipRectMin(), childDl.GetClipRectMax());
-
-        var endCursor = ImGui.GetCursorScreenPos();
-        var end = new float2(endCursor.X + ImGui.GetContentRegionAvail().X, endCursor.Y);
-
-        var cr = new ImColor8(0, 0, 64);
-        parentDl.AddRectFilled(start, end, cr);
-
-        parentDl.PopClipRect();
+        (space, _) = space.CutY();
+        ImGuiEx.BgHighlight(space, styleCr: ImGuiCol.FrameBg);
       }
     }
 
@@ -567,12 +514,241 @@ public static partial class XmlPatcher
 
     private static ImColor8 NodeColor(XmlNode node) => node switch
     {
-      XmlComment => new(180, 255, 180),
+      XmlComment => new(106, 153, 85),
       XmlProcessingInstruction => new(180, 180, 180),
       _ => ImColor8.White,
     };
 
     private static void TreeIndent() => ImGui.Indent(ImGui.GetTreeNodeToLabelSpacing());
     private static void TreeUnindent() => ImGui.Unindent(ImGui.GetTreeNodeToLabelSpacing());
+  }
+
+  public class ErrorPopup : Popup
+  {
+    private readonly string title;
+    private readonly string error;
+
+    private static readonly char[] buffer = new char[0x1000];
+
+    public ErrorPopup(string error, XmlElement elementLoc = null, string stringLoc = null)
+    {
+      var sb = new StringBuilder();
+      sb.Append("Patch Error @ ");
+      if (elementLoc != null)
+        AddPath(elementLoc, sb);
+      else
+        sb.Append(stringLoc ?? "Unknown");
+      sb.AppendLine();
+      sb.Append(error);
+      if (elementLoc != null)
+      {
+        sb.AppendLine().AppendLine();
+
+        var indent = AddAbbrevXmlStart(elementLoc?.ParentNode as XmlElement, sb);
+        AddPrevSiblings(elementLoc, sb, indent);
+        sb.Append(indent).AppendLine($"<!-- ERROR -->");
+        AddXml(elementLoc, sb, indent);
+        AddNextSiblings(elementLoc, sb, indent);
+        AddAbbrevXmlEnd(elementLoc?.ParentNode as XmlElement, sb);
+      }
+      this.error = sb.ToString();
+
+      title = "PatchDebug####" + PopupId;
+    }
+
+    private static int AddPath(XmlElement el, StringBuilder sb)
+    {
+      if (el?.ParentNode is null or XmlDocument)
+        return 0;
+
+      var depth = AddPath(el.ParentNode as XmlElement, sb) + 1;
+      if (depth > 1)
+        sb.Append('/');
+
+      if (depth == 2 && el.GetAttributeNode("Path") is XmlAttribute pathAttr)
+        sb.Append($"{el.Name}[@Path=\"{pathAttr.Value}\"]");
+      else if (el.GetAttributeNode("Id") is XmlAttribute idAttr)
+        sb.Append($"{el.Name}[@Id=\"{idAttr.Value}\"]");
+      else
+      {
+        var idx = 1;
+        var prev = el.PreviousSibling;
+        while (prev != null)
+        {
+          if (prev.Name == el.Name)
+            idx++;
+          prev = prev.PreviousSibling;
+        }
+        sb.Append($"{el.Name}[{idx}]");
+      }
+      return depth;
+    }
+
+    private static void AddXml(XmlNode node, StringBuilder sb, string indent)
+    {
+      if (node == null)
+        return;
+
+      var line = new LineBuilder(buffer);
+      line.Add(indent);
+      line.NodeOneLine(node);
+      sb.Append(line.Line).AppendLine();
+
+      if (!node.HasChildNodes)
+        return;
+
+      var children = node.ChildNodes;
+      var childIndent = indent + "  ";
+      for (var i = 0; i < children.Count; i++)
+        AddXml(children[i], sb, childIndent);
+
+      line.Clear();
+      line.Add(indent);
+      line.ElementClose(node.Name);
+      sb.Append(line.Line).AppendLine();
+    }
+
+    private static string AddAbbrevXmlStart(XmlElement el, StringBuilder sb)
+    {
+      if (el == null)
+        return "";
+
+      var indent = AddAbbrevXmlStart(el.ParentNode as XmlElement, sb);
+
+      AddPrevSiblings(el, sb, indent);
+
+      var line = new LineBuilder(buffer);
+      line.Add(indent);
+      AddElOpen(el, ref line);
+
+      sb.Append(line.Line).AppendLine();
+
+      return indent + "  ";
+    }
+
+    private static void AddAbbrevXmlEnd(XmlElement el, StringBuilder sb)
+    {
+      if (el == null)
+        return;
+
+      ReadOnlySpan<char> indent = "";
+      var parent = el.ParentNode as XmlElement;
+      while (parent != null)
+      {
+        indent = "  " + indent.ToString();
+        parent = parent.ParentNode as XmlElement;
+      }
+
+      while (el != null)
+      {
+        sb.Append(indent).AppendLine($"</{el.Name}>");
+        AddNextSiblings(el, sb, indent);
+        el = el.ParentNode as XmlElement;
+        if (el != null)
+          indent = indent[2..];
+      }
+    }
+
+    private static void AddPrevSiblings(XmlElement el, StringBuilder sb, string indent)
+    {
+      var prev = el;
+      for (var i = 0; i < 2 && prev.PreviousSibling is XmlElement prevSib; i++)
+        prev = prevSib;
+
+      if (prev.PreviousSibling != null)
+        sb.Append(indent).AppendLine("...");
+      while (prev != null && prev != el)
+      {
+        sb.Append(indent);
+        AddCollapsedXml(prev, sb);
+        sb.AppendLine();
+        prev = prev.NextSibling as XmlElement;
+      }
+    }
+
+    private static void AddNextSiblings(XmlElement el, StringBuilder sb, ReadOnlySpan<char> indent)
+    {
+      var next = el;
+      for (var i = 0; i < 2 && next.NextSibling is XmlElement nextSib; i++)
+      {
+        next = nextSib;
+        sb.Append(indent);
+        AddCollapsedXml(next, sb);
+        sb.AppendLine();
+      }
+      if (next.NextSibling != null)
+        sb.Append(indent).AppendLine("...");
+    }
+
+    private static void AddCollapsedXml(XmlElement el, StringBuilder sb)
+    {
+      var line = new LineBuilder(buffer);
+
+      AddElOpen(el, ref line);
+
+      if (el.ChildNodes.Count > 0)
+      {
+        if (el.ChildNodes.Count == 1 && el.ChildNodes[0] is XmlText text && text.Value.Length <= 32)
+          line.Add(text.Value);
+        else
+          line.Add("...");
+
+        line.ElementClose(el.Name);
+      }
+
+      sb.Append(line.Line);
+    }
+
+    private static void AddElOpen(XmlElement el, ref LineBuilder line)
+    {
+      line.ElOpenStart(el.Name);
+
+      var attrs = el.Attributes;
+      for (var i = 0; i < attrs.Count; i++)
+      {
+        var attr = attrs[i];
+        if (attr.Name == "PathKey")
+          continue;
+        line.Add(' ');
+        line.ElAttr(attr.Name, attr.Value);
+      }
+
+      line.ElOpenEnd(!el.HasChildNodes);
+    }
+
+    protected override void OnDrawUi()
+    {
+      ImGui.SetNextWindowSize(float2.Unpack(Program.GetWindow().Size) * 0.8f);
+      ImGui.OpenPopup(title);
+      ImGui.BeginPopup(
+        title, ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.Popup);
+      ImGuiHelper.SetCurrentWindowToCenter();
+
+      var space = ImGuiEx.AvailableSpace();
+      const string titleText = "KittenExtensions Patch Error";
+      ImGuiEx.CenterTextCursor(space, titleText);
+      ImGui.TextColored(new float4(1, 0, 0, 1), titleText);
+
+      (_, space) = space.CutY();
+      var (left, right) = space.SplitX();
+
+      ImGui.SetCursorScreenPos(left.Start);
+      if (ImGui.Button("Copy To Clipboard", new float2(left.Size.X, 0)))
+        ImGui.SetClipboardText(error);
+      ImGui.Separator();
+      (_, space) = space.CutY();
+
+      ImGui.SetCursorScreenPos(right.Start);
+      if (ImGui.Button("Exit", new float2(right.Size.X, 0)))
+        Active = false;
+
+      ImGui.SetNextWindowPos(space.Start);
+      ImGui.SetNextWindowSize(space.Size);
+      ImGui.BeginChild("Error", windowFlags: ImGuiWindowFlags.HorizontalScrollbar);
+      ImGui.TextColored(new float4(1, 0, 0, 1), error);
+      ImGui.EndChild();
+
+      ImGui.EndPopup();
+    }
   }
 }

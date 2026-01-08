@@ -24,7 +24,10 @@ public class PatchExecutor
 
   private readonly IEnumerator<ExecState> walk;
 
-  public XmlElement CurElement { get; private set; }
+  private XmlElement curElement;
+  private XmlElement lastElement;
+  private XmlElement errElement;
+  public XmlElement CurElement => errElement ?? curElement;
   public DeserializedPatch CurPatch { get; private set; }
   public OpExecution CurExec { get; private set; }
   public OpAction CurAction { get; private set; }
@@ -96,7 +99,7 @@ public class PatchExecutor
   {
     while (Next(out var state))
     {
-      if (state == ExecState.ActionStart)
+      if (state is ExecState.ActionStart or ExecState.ActionEnd)
         return true;
     }
     return false;
@@ -105,10 +108,14 @@ public class PatchExecutor
   public bool CanNextOp => Error == null && LastState != ExecState.End;
   public bool ToNextOp()
   {
+    var hasNonEnd = false;
     while (Next(out var state))
     {
       if (state == ExecState.ExecStart)
         return true;
+      else if (state == ExecState.ExecEnd && hasNonEnd)
+        return true;
+      hasNonEnd |= state != ExecState.ExecEnd;
     }
     return false;
   }
@@ -133,6 +140,7 @@ public class PatchExecutor
     catch (Exception ex)
     {
       Error = ex;
+      errElement = lastElement;
       state = ExecState.Error;
       return false;
     }
@@ -147,13 +155,15 @@ public class PatchExecutor
       if (patch.Error != null)
       {
         Error = patch.Error;
-        CurElement = patch.Element;
+        errElement = patch.Element;
         yield return ExecState.Error;
         break;
       }
       using var _ = WithElement(patch.Element);
       var exec = patchCtx.Execution(patch.Patch);
+      CurExec = exec;
       yield return ExecState.PatchStart;
+      CurExec = null;
       foreach (var state in WalkExec([exec]))
         yield return state;
       yield return ExecState.PatchEnd;
@@ -202,7 +212,8 @@ public class PatchExecutor
   private ElementScope WithElement(XmlElement el)
   {
     var prev = CurElement;
-    CurElement = el;
+    curElement = el;
+    lastElement = el;
     return new(this, prev);
   }
 
@@ -210,7 +221,7 @@ public class PatchExecutor
   {
     private readonly PatchExecutor executor = executor;
     private readonly XmlElement prev = prev;
-    public void Dispose() => executor.CurElement = prev;
+    public void Dispose() => executor.curElement = prev;
   }
 }
 
@@ -253,7 +264,7 @@ public record class OpAction(
   {
     XmlNode nodeVal => cur.OwnerDocument.ImportNode(nodeVal, true),
     string strVal => cur.OwnerDocument.CreateTextNode(strVal),
-    _ => throw new InvalidOperationException($"{child?.GetType()?.Name}"),
+    _ => throw new InvalidOperationException($"Invalid child type {child?.GetType()?.Name}"),
   };
 
   public void Run()
@@ -262,7 +273,7 @@ public record class OpAction(
     {
       case OpActionType.Update or OpActionType.Copy: Update(); break;
       case OpActionType.Delete: Delete(); break;
-      default: throw new InvalidOperationException($"{Type}");
+      default: throw new InvalidOperationException($"Invalid Action {Type}");
     }
   }
 
@@ -274,7 +285,7 @@ public record class OpAction(
     {
       case XmlElement el: UpdateElement(el, Source); break;
       case XmlCharacterData or XmlAttribute: UpdateText(Target, Source); break;
-      default: throw new InvalidOperationException($"{Target.GetType()}");
+      default: throw new InvalidOperationException($"Invalid Update target {Target.GetType()}");
     }
   }
 
@@ -299,7 +310,7 @@ public record class OpAction(
       case double srcDouble: inserter.Insert(ToNode(target, srcDouble.ToString("f"))); break;
       case string srcString: inserter.Insert(ToNode(target, srcString)); break;
       default:
-        throw new InvalidOperationException($"{source?.GetType()}");
+        throw new InvalidOperationException($"Invalid Update source {source?.GetType()}");
     }
     if (Pos == OpPosition.Replace)
       target.ParentNode.RemoveChild(target);
@@ -406,10 +417,10 @@ public record class OpAction(
       {
         string srcString => srcString,
         XmlNode srcNode => srcNode.Value,
-        _ => throw new InvalidOperationException($"{list[0]?.GetType()}"),
+        _ => throw new InvalidOperationException($"Invalid Update source {list[0]?.GetType()}"),
       },
       IList => "",
-      _ => throw new InvalidOperationException($"{source?.GetType()}"),
+      _ => throw new InvalidOperationException($"Invalid Update source {source?.GetType()}"),
     } ?? "";
 
     target.Value = Pos switch
@@ -417,7 +428,7 @@ public record class OpAction(
       OpPosition.Replace or OpPosition.Default => copyVal,
       OpPosition.Append => target.Value + copyVal,
       OpPosition.Prepend => copyVal + target.Value,
-      _ => throw new InvalidOperationException($"{Pos}"),
+      _ => throw new InvalidOperationException($"Invalid Pos {Pos} for value Update"),
     };
   }
 
@@ -451,7 +462,7 @@ public record class OpAction(
           last = node;
           break;
         default:
-          throw new InvalidOperationException($"{pos}");
+          throw new InvalidOperationException($"Invalid insert Pos {pos}");
       }
     }
   }

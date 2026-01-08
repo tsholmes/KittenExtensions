@@ -78,9 +78,18 @@ public static partial class XmlPatcher
 
   private static void RunPatches()
   {
-    var ctx = new DefaultOpExecContext(RootNode.CreateNavigator());
-    var executor = new PatchExecutor(ctx, GetPatches());
-    executor.ToEnd();
+    try
+    {
+      var ctx = new DefaultOpExecContext(RootNode.CreateNavigator());
+      var executor = new PatchExecutor(ctx, GetPatches());
+      executor.ToEnd();
+      if (executor.Error != null)
+        throw ErrorAndExit(executor.Error.ToString(), executor.CurElement);
+    }
+    catch (Exception ex)
+    {
+      throw ErrorAndExit(ex.ToString());
+    }
   }
 
   private static DeserializedPatch DeserializePatch(XmlElement element)
@@ -111,12 +120,29 @@ public static partial class XmlPatcher
       LoadModData(mod);
   }
 
+  private static Exception ErrorAndExit(string error, XmlElement elementLoc = null, string strLoc = null)
+  {
+    Console.Error.WriteLine(error);
+    var errTask = new PopupTask(new ErrorPopup(error, elementLoc, strLoc));
+    while (errTask.Show)
+      errTask.OnFrame();
+    Environment.Exit(1);
+    throw new InvalidOperationException();
+  }
+
   private static void LoadModData(ModEntry modEntry)
   {
-    // TODO: error handling when file doesn't exist, is malformed, etc
     var tomlPath = Path.Combine("Content", modEntry.Id, "mod.toml");
-    var mod = TomletMain.To<ModToml>(File.ReadAllText(tomlPath));
     var dirPath = Filepath.CorrectSeparators(Path.GetFullPath(Path.GetDirectoryName(tomlPath) ?? ""));
+    ModToml mod;
+    try
+    {
+      mod = TomletMain.To<ModToml>(File.ReadAllText(tomlPath));
+    }
+    catch (Exception ex)
+    {
+      throw ErrorAndExit(ex.ToString(), strLoc: Path.GetFullPath(tomlPath));
+    }
 
     var modNode = RootDoc.CreateElement("Mod");
     RootNode.AppendChild(modNode);
@@ -138,14 +164,21 @@ public static partial class XmlPatcher
   private static void LoadModFile(XmlElement modNode, string dirPath, string path)
   {
     var fullPath = Filepath.CorrectSeparators(Path.GetFullPath(Path.Combine(dirPath, path)));
-    var doc = new XmlDocument();
-    doc.Load(fullPath);
+    try
+    {
+      var doc = new XmlDocument();
+      doc.Load(fullPath);
 
-    var docNode = (XmlElement)RootDoc.ImportNode(doc.DocumentElement, true);
-    modNode.AppendChild(docNode);
+      var docNode = (XmlElement)RootDoc.ImportNode(doc.DocumentElement, true);
+      modNode.AppendChild(docNode);
 
-    docNode.SetAttribute("Path", Filepath.CorrectSeparators(path));
-    docNode.SetAttribute("PathKey", fullPath.ToLowerInvariant());
+      docNode.SetAttribute("Path", Filepath.CorrectSeparators(path));
+      docNode.SetAttribute("PathKey", fullPath.ToLowerInvariant());
+    }
+    catch (Exception ex)
+    {
+      ErrorAndExit(ex.ToString(), strLoc: fullPath);
+    }
   }
 
   private class ModToml
