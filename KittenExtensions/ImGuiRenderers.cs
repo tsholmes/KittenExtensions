@@ -8,6 +8,7 @@ using Brutal.Numerics;
 using Brutal.VulkanApi;
 using Core;
 using KSA;
+using KSA.Rendering;
 
 namespace KittenExtensions;
 
@@ -84,11 +85,14 @@ public static class ImGuiRenderers
       }
     }
 
-    foreach (var r in activeRenderers)
-    {
-      commandBuffer.TransitionImage(
-        r.Target, VkImageLayout.ColorAttachmentOptimal, VkImageLayout.ShaderReadOnlyOptimal);
-    }
+    Span<ImageTransition> transitions = stackalloc ImageTransition[activeRenderers.Count];
+    for (var i = 0; i < activeRenderers.Count; i++)
+      transitions[i] = new(
+        activeRenderers[i].Target,
+        ImageBarrierInfo.Presets.ColorAttachment,
+        ImageBarrierInfo.Presets.ShaderReadOnlyFragment);
+
+    commandBuffer.TransitionImages2(transitions);
   }
 
   public static void RebuildAll()

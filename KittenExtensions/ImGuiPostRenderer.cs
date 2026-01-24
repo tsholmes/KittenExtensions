@@ -8,6 +8,7 @@ using Brutal.VulkanApi;
 using Brutal.VulkanApi.Abstractions;
 using Core;
 using KSA;
+using KSA.Rendering;
 using RenderCore;
 
 namespace KittenExtensions;
@@ -128,8 +129,12 @@ public class ImGuiPostRenderer : RenderTechnique
     var pxBounds = bounds.X;
     var uvBounds = bounds.Y;
 
-    commandBuffer.TransitionImage(
-      BaseRenderer.Target, VkImageLayout.ColorAttachmentOptimal, VkImageLayout.ShaderReadOnlyOptimal);
+    commandBuffer.TransitionImages2([
+      new ImageTransition(
+        BaseRenderer.Target,
+        ImageBarrierInfo.Presets.ColorAttachment,
+        ImageBarrierInfo.Presets.ShaderReadOnlyVertex
+      )]);
 
     var extent = new VkExtent2D(renderTarget.Extent.Width, renderTarget.Extent.Height);
     var rect = new VkRect2D(extent);

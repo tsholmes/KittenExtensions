@@ -299,16 +299,14 @@ public class PopupTask(Popup popup) : SetupTaskBase
       if (ImGui.GetIO().ConfigFlags.HasFlag(ImGuiConfigFlags.ViewportsEnable))
       {
         ImGui.UpdatePlatformWindows();
-        ImGui.RenderPlatformWindowsDefault(IntPtr.Zero, IntPtr.Zero);
+        ImGui.RenderPlatformWindowsDefault();
       }
-      (FrameResult result, AcquiredFrame acquiredFrame1) = renderer.TryAcquireNextFrame();
-      AcquiredFrame acquiredFrame2 = acquiredFrame1;
+      (FrameResult result, AcquiredFrame acquiredFrame) = renderer.TryAcquireNextFrame();
       if (result != FrameResult.Success)
         PartialRebuild();
       else
       {
-        acquiredFrame1 = acquiredFrame2;
-        (FrameResources resources, CommandBuffer commandBuffer) = acquiredFrame1;
+        (FrameResources resources, CommandBuffer commandBuffer) = acquiredFrame;
         VkSubpassContents contents = VkSubpassContents.Inline;
         VkRenderPassBeginInfo pRenderPassBegin = new()
         {
