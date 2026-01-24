@@ -7,8 +7,9 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Lib.Harmony" Version="2.4.2" />
+    <ProjectReference Include="../XPathPatch/XPathPatch.csproj" />
 
-    <ModFile Include="$(OutputPath)\$(ModName).dll" />
+    <ModFile Include="$(OutputPath)\*.dll" />
     <ModFile Include="..\Content\**\*" />
 
     <_KsaAssemblies Include="$(KSADir)Brutal*.dll" Path="%(FullPath)" />

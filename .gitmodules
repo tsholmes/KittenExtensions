@@ -1,0 +1,3 @@
+[submodule "XPathPatch"]
+	path = XPathPatch
+	url = https://github.com/tsholmes/XPathPatch.git

@@ -12,13 +12,15 @@ using Core.Files.Paths;
 using KSA;
 using Tomlet;
 using Tomlet.Attributes;
+using XPP.Doc;
+using XPP.Patch;
 
 namespace KittenExtensions.Patch;
 
 public static partial class XmlPatcher
 {
-  private static XmlDocument RootDoc;
-  private static XmlElement RootNode;
+  private static readonly PatchDomain Domain = new();
+  private static PatchExecutor Executor;
 
   private static readonly Dictionary<Type, string> XmlRootName = [];
 
@@ -34,12 +36,11 @@ public static partial class XmlPatcher
     var result = default(T);
     try
     {
-      var normPath = Filepath.CorrectSeparators(Path.GetFullPath(filePath)).ToLowerInvariant();
-      var node = RootNode.SelectSingleNode($"Mod/{rootName}[@PathKey='{normPath}']");
-      if (node != null)
+      var node = Domain.Mods.FirstOrDefault(m => m.Id == mod.Id).File(Path.GetFullPath(filePath));
+      if (node.Valid)
       {
         var serializer = AssetEx.GetSerializer<T>();
-        using var reader = new XmlNodeReader(node);
+        using var reader = new XPDocReader(node);
         result = serializer.Deserialize(reader) is T val ? val : default;
       }
     }
@@ -55,72 +56,51 @@ public static partial class XmlPatcher
   {
     LoadData();
 
-    if (DebugEnabled())
+    PatchDebugPopup debugPopup = null;
+
+    try
     {
-      RootDoc.Save(Path.Combine(Constants.DocumentsFolderPath, "root.xml"));
-      var patchTask = new PopupTask(new PatchDebugPopup());
-      while (patchTask.Show)
-        patchTask.OnFrame();
+      if (DebugEnabled())
+      {
+        var doc = new XmlDocument();
+        doc.Load(new XPDocReader(Domain.Doc.LatestRoot));
+        doc.Save(Path.Combine(Constants.DocumentsFolderPath, "root.xml"));
+        var patchTask = new PopupTask(debugPopup = new PatchDebugPopup());
+        while (patchTask.Show)
+          patchTask.OnFrame();
+      }
+      else
+        RunPatches();
     }
-    else
-      RunPatches();
-  }
-
-  private static List<XmlElement> ChildElementList(XmlNode node, string path) =>
-    new(node.SelectNodes(path).Cast<XmlElement>());
-
-  private static IEnumerable<DeserializedPatch> GetPatches()
-  {
-    foreach (var mod in ChildElementList(RootNode, "Mod"))
-      foreach (var patch in ChildElementList(mod, "Patch"))
-        yield return DeserializePatch(patch);
+    catch (Exception ex)
+    {
+      debugPopup?.Active = false;
+      throw ErrorAndExit(ex.ToString(), Executor?.Next?.Patch ?? XPNodeRef.Invalid);
+    }
   }
 
   private static void RunPatches()
   {
     try
     {
-      var ctx = new DefaultOpExecContext(RootNode.CreateNavigator());
-      var executor = new PatchExecutor(ctx, GetPatches());
-      executor.ToEnd();
-      if (executor.Error != null)
-        throw ErrorAndExit(executor.Error.ToString(), executor.CurElement);
+      Executor.StepToEnd();
+      if (Executor.HasError)
+        throw ErrorAndExit(Executor.Next.Error.ToString(), Executor.Next.Patch);
     }
     catch (Exception ex)
     {
-      throw ErrorAndExit(ex.ToString());
-    }
-  }
-
-  private static DeserializedPatch DeserializePatch(XmlElement element)
-  {
-    var id = $"{(element.ParentNode as XmlElement)?.GetAttribute("Id")}/{element.GetAttribute("Path")}";
-    try
-    {
-      var serializer = AssetEx.GetSerializer<XmlPatch>();
-      using var reader = new XmlNodeReader(element);
-      var patch = (XmlPatch)serializer.Deserialize(reader);
-      patch.Id = id;
-      XmlOpElementPopulator.Populate(element, patch);
-      return new(id, element, patch, null);
-    }
-    catch (Exception ex)
-    {
-      return new(id, element, null, ex?.InnerException ?? ex);
+      throw ErrorAndExit(ex.ToString(), Executor?.Next?.Patch ?? XPNodeRef.Invalid);
     }
   }
 
   private static void LoadData()
   {
-    RootDoc = new XmlDocument();
-    RootDoc.LoadXml("<Root/>");
-    RootNode = RootDoc.DocumentElement;
-
     foreach (var mod in ModLibrary.Manifest.Mods)
       LoadModData(mod);
+    Executor = Domain.Executor();
   }
 
-  private static Exception ErrorAndExit(string error, XmlElement elementLoc = null, string strLoc = null)
+  private static Exception ErrorAndExit(string error, XPNodeRef elementLoc = default, string strLoc = null)
   {
     Console.Error.WriteLine(error);
     var errTask = new PopupTask(new ErrorPopup(error, elementLoc, strLoc));
@@ -144,36 +124,27 @@ public static partial class XmlPatcher
       throw ErrorAndExit(ex.ToString(), strLoc: Path.GetFullPath(tomlPath));
     }
 
-    var modNode = RootDoc.CreateElement("Mod");
-    RootNode.AppendChild(modNode);
-
-    modNode.SetAttribute("Id", modEntry.Id);
-    modNode.SetAttribute("Name", mod.Name);
-    modNode.SetAttribute("PathKey", dirPath.ToLowerInvariant());
+    var patchMod = Domain.AddMod(modEntry.Id);
+    patchMod.Node.SetAttribute("Name", mod.Name);
+    patchMod.Node.SetAttribute("Path", PatchDomain.NormalizePath(dirPath));
 
     foreach (var path in mod.PlanetMeshCollections)
-      LoadModFile(modNode, dirPath, path);
+      LoadModFile(patchMod, dirPath, path);
     foreach (var path in mod.SystemTemplates)
-      LoadModFile(modNode, dirPath, path);
+      LoadModFile(patchMod, dirPath, path);
     foreach (var path in mod.Assets)
-      LoadModFile(modNode, dirPath, path);
+      LoadModFile(patchMod, dirPath, path);
     foreach (var path in mod.Patches)
-      LoadModFile(modNode, dirPath, path);
+      LoadModFile(patchMod, dirPath, path);
   }
 
-  private static void LoadModFile(XmlElement modNode, string dirPath, string path)
+  private static void LoadModFile(PatchDomain.PatchMod mod, string dirPath, string path)
   {
     var fullPath = Filepath.CorrectSeparators(Path.GetFullPath(Path.Combine(dirPath, path)));
     try
     {
-      var doc = new XmlDocument();
-      doc.Load(fullPath);
-
-      var docNode = (XmlElement)RootDoc.ImportNode(doc.DocumentElement, true);
-      modNode.AppendChild(docNode);
-
-      docNode.SetAttribute("Path", Filepath.CorrectSeparators(path));
-      docNode.SetAttribute("PathKey", fullPath.ToLowerInvariant());
+      var fileElement = mod.ImportFile(fullPath);
+      fileElement.SetAttribute("RelPath", path);
     }
     catch (Exception ex)
     {

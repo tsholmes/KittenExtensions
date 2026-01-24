@@ -1,55 +1,54 @@
 <Patch>
   <With Path="Mod[@Id='KittenExtensions']">
-    <Update Path="Assets/@Path">NewPath</Update>
-    <Update Pos="Append">
+    <Copy Pos="Append">
       <Test abc="123" def="456">
         <Init />
       </Test>
-    </Update>
+    </Copy>
     <With Path="Test">
-      <Update Pos="Append">
+      <Copy Pos="Append">
         <Appended />
-      </Update>
-      <Update Pos="Prepend">
+      </Copy>
+      <Copy Pos="Prepend">
         <Prepended />
-      </Update>
-      <Update Pos="After">
+      </Copy>
+      <Copy Pos="After">
         <After />
-      </Update>
-      <Update Pos="Before">
+      </Copy>
+      <Copy Pos="Before">
         <Before />
-      </Update>
-      <Update Path="@*" Pos="Append">X</Update>
+      </Copy>
+      <Copy Path="@*" Pos="Append">X</Copy>
     </With>
-    <Update Pos="Append">
+    <Copy Pos="Append">
       <MergeTest>
         <X Id="123" />
         <X Id="345" Id2="123" />
       </MergeTest>
-    </Update>
-    <Update Path="MergeTest" Pos="Merge">
+    </Copy>
+    <Merge Path="MergeTest">
       <MergeTest _MergePos="Prepend">
         <X Id="123">TEXT</X>
         <X Id="123" Id2="123" _MergeId="Id2">TEXT2</X>
       </MergeTest>
-    </Update>
+    </Merge>
     <Copy Path="Assets" Pos="Append" From="/Root/Mod[@Id='Core']/Assets/GaugeCanvas[@Id='RendezvousControl']" />
-    <Update Path="Assets/GaugeCanvas[@Id='RendezvousControl']">
+    <Copy Path="Assets/GaugeCanvas[@Id='RendezvousControl']">
       <GaugeCanvas Id="RendezvousControl2">
         <DisplayName Value="COPIED" />
         <OffsetUv X="-0.25" />
       </GaugeCanvas>
-    </Update>
+    </Copy>
     <If Path="Assets/GaugeCanvas/DisplayName/@Value='COPIED'">
       <Any>
-        <Update Pos="Append">
+        <Copy Pos="Append">
           <Result>SUCCESS</Result>
-        </Update>
+        </Copy>
       </Any>
       <None>
-        <Update Pos="Append">
+        <Copy Pos="Append">
           <Result>FAIL</Result>
-        </Update>
+        </Copy>
       </None>
     </If>
   </With>

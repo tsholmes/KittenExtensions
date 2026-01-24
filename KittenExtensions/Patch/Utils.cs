@@ -1,7 +1,7 @@
 
 using System;
 using System.Collections;
-using System.Xml;
+// using System.Xml;
 using Brutal.GlfwApi;
 using Brutal.ImGuiApi;
 using Brutal.VulkanApi;
@@ -9,6 +9,7 @@ using Brutal.VulkanApi.Abstractions;
 using Core;
 using KSA;
 using RenderCore;
+using XPP.Doc;
 
 namespace KittenExtensions.Patch;
 
@@ -70,36 +71,53 @@ public ref struct LineBuilder(Span<char> buf)
     length += len;
   }
 
-  public void AddNodePath(XmlNode node, XmlNode relTo = null) => AddNodePathInternal(node, relTo);
-
-  private bool AddNodePathInternal(XmlNode node, XmlNode relTo)
+  public void Add(XPName name)
   {
-    if (node == null || node == relTo)
-      return false;
-    if (node.ParentNode != null && AddNodePathInternal(node.ParentNode, relTo))
-      Add('/');
-    switch (node)
+    if (!string.IsNullOrEmpty(name.Prefix))
     {
-      case XmlElement el:
-        Add(el.Name);
-        if (el.GetAttributeNode("Id") is XmlAttribute idAttr)
+      Add(name.Prefix);
+      Add(':');
+    }
+    Add(name.Local);
+  }
+
+  public void AddNodePath(XPNodeRef node, XPNodeRef relTo = default) =>
+    AddNodePathInternal(node, relTo, true);
+
+  private bool AddNodePathInternal(XPNodeRef node, XPNodeRef relTo, bool first = false)
+  {
+    if (!node.Valid)
+      return false;
+    if (node.SameAs(relTo))
+    {
+      if (first)
+        Add('.');
+      return first;
+    }
+    if (node.Parent.Valid && AddNodePathInternal(node.Parent, relTo))
+      Add('/');
+    switch (node.Type)
+    {
+      case XPType.Element:
+        Add(node.Name);
+        if (node.Attribute("Id") is XPNodeRef { Valid: true } idAttr)
         {
           Add("[@Id=\"");
           Add(idAttr.Value);
           Add("\"]");
         }
         break;
-      case XmlText:
+      case XPType.Text:
         Add("text()");
         break;
-      case XmlProcessingInstruction proc:
+      case XPType.ProcInst:
         Add("processing-instruction(\"");
-        Add(proc.Name);
+        Add(node.Name);
         Add("\")");
         break;
-      case XmlAttribute attr:
+      case XPType.Attribute:
         Add('@');
-        Add(attr.Name);
+        Add(node.Name);
         break;
       default:
         break;
@@ -107,81 +125,32 @@ public ref struct LineBuilder(Span<char> buf)
     return true;
   }
 
-  public void AddXPathVal(object obj)
+  public void NodeOneLine(XPNodeRef node)
   {
-    switch (obj)
+    switch (node.Type)
     {
-      case string srcString:
-        AddQuotedFirstLine(srcString);
+      case XPType.Element:
+        ElementOpen(node, !node.FirstContent.Valid);
         break;
-      case bool srcBool:
-        Add(srcBool ? "true" : "false");
-        break;
-      case double srcDouble:
-        Add(srcDouble, "f");
-        break;
-      case IList srcList:
-        if (srcList.Count == 1)
-        {
-          switch (srcList[0])
-          {
-            case string elStr:
-              AddQuotedFirstLine(elStr);
-              break;
-            case XmlNode elNode:
-              NodeOneLine(elNode);
-              break;
-          }
-        }
-        else
-        {
-          for (var i = 0; i < 3 && i < srcList.Count; i++)
-          {
-            switch (srcList[i])
-            {
-              case string elStr:
-                Add("\n  ");
-                AddQuotedFirstLine(elStr);
-                break;
-              case XmlNode elNode:
-                Add("\n  ");
-                NodeOneLine(elNode);
-                break;
-            }
-          }
-          if (srcList.Count > 3)
-            Add("\n  ...");
-        }
-        break;
-    }
-  }
-
-  public void NodeOneLine(XmlNode node)
-  {
-    switch (node)
-    {
-      case XmlElement el:
-        ElementOpen(el, !el.HasChildNodes);
-        break;
-      case XmlAttribute attr:
+      case XPType.Attribute:
         Add('@');
-        Add(attr.Name);
+        Add(node.Name);
         Add('=');
-        AddQuotedFirstLine(attr.Value);
+        AddQuotedFirstLine(node.Value);
         break;
-      case XmlComment comment:
+      case XPType.Comment:
         Add("<!-- ");
-        AddFirstLine(comment.Value);
+        AddFirstLine(node.Value);
         Add(" -->");
         break;
-      case XmlCharacterData text:
-        AddQuotedFirstLine(text.Value);
+      case XPType.Text or XPType.CData:
+        AddQuotedFirstLine(node.Value);
         break;
-      case XmlProcessingInstruction proc:
+      case XPType.ProcInst:
         Add("<?");
-        Add(proc.Name);
+        Add(node.Name);
         Add(' ');
-        AddFirstLine(proc.Value);
+        AddFirstLine(node.Value);
         Add("?>");
         break;
       default:
@@ -189,26 +158,27 @@ public ref struct LineBuilder(Span<char> buf)
     }
   }
 
-  public void NodeInline(XmlNode node)
+  public void NodeInline(XPNodeRef node)
   {
-    if (node is XmlElement el)
-      ElementInline(el);
-    else if (node is XmlText text)
-      TextInline(text);
-    else if (node is XmlComment comment)
-      CommentInline(comment);
-    else if (node is XmlProcessingInstruction proc)
-      ProcInline(proc);
+    if (node.Type is XPType.Element)
+      ElementInline(node);
+    else if (node.Type is XPType.Text)
+      TextInline(node);
+    else if (node.Type is XPType.Comment)
+      CommentInline(node);
+    else if (node.Type is XPType.ProcInst)
+      ProcInline(node);
     else
       Add("???");
   }
 
-  public void ElementInline(XmlElement el)
+  public void ElementInline(XPNodeRef el)
   {
     ElOpenStart(el.Name);
-    ElAttrsInline(el.Attributes);
+    ElAttrsInline(el);
 
-    if (!el.HasChildNodes)
+    var child = el.FirstContent;
+    if (!child.Valid)
     {
       ElOpenEnd(true);
       return;
@@ -216,26 +186,28 @@ public ref struct LineBuilder(Span<char> buf)
 
     ElOpenEnd();
 
-    var children = el.ChildNodes;
-    for (var i = 0; i < children.Count; i++)
-      NodeInline(children[i]);
+    while (child.Valid)
+    {
+      NodeInline(child);
+      child = child.NextSibling;
+    }
 
     ElementClose(el.Name);
   }
 
-  public void TextInline(XmlText text)
+  public void TextInline(XPNodeRef text)
   {
     Add(text.Value);
   }
 
-  public void CommentInline(XmlComment comment)
+  public void CommentInline(XPNodeRef comment)
   {
     Add("<!--");
     Add(comment.Value);
     Add("-->");
   }
 
-  public void ProcInline(XmlProcessingInstruction proc)
+  public void ProcInline(XPNodeRef proc)
   {
     Add("<?");
     Add(proc.Name);
@@ -244,21 +216,21 @@ public ref struct LineBuilder(Span<char> buf)
     Add("?>");
   }
 
-  public void ElementOpen(XmlElement el, bool selfClose = false)
+  public void ElementOpen(XPNodeRef el, bool selfClose = false)
   {
     ElOpenStart(el.Name);
-    ElAttrsInline(el.Attributes);
+    ElAttrsInline(el);
     ElOpenEnd(selfClose);
   }
 
-  public void ElementClose(ReadOnlySpan<char> name)
+  public void ElementClose(XPName name)
   {
     Add("</");
     Add(name);
     Add('>');
   }
 
-  public void ElOpenStart(ReadOnlySpan<char> name)
+  public void ElOpenStart(XPName name)
   {
     Add('<');
     Add(name);
@@ -272,17 +244,18 @@ public ref struct LineBuilder(Span<char> buf)
       Add('>');
   }
 
-  private void ElAttrsInline(XmlAttributeCollection attrs)
+  private void ElAttrsInline(XPNodeRef parent)
   {
-    for (var i = 0; i < attrs.Count; i++)
+    var attr = parent.FirstAttr;
+    while (attr.Valid)
     {
-      var attr = attrs[i];
       Add(' ');
       ElAttr(attr.Name, attr.Value);
+      attr = attr.NextSibling;
     }
   }
 
-  public void ElAttr(ReadOnlySpan<char> name, ReadOnlySpan<char> value)
+  public void ElAttr(XPName name, ReadOnlySpan<char> value)
   {
     Add(name);
     Add("=\"");

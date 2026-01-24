@@ -1,13 +1,13 @@
 
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Text;
-using System.Xml;
-using System.Xml.XPath;
 using Brutal.ImGuiApi;
 using Brutal.Numerics;
 using KSA;
+using XPP.Doc;
+using XPP.Patch;
+using XPP.Path;
 
 namespace KittenExtensions.Patch;
 
@@ -18,33 +18,46 @@ public static partial class XmlPatcher
     private readonly string title;
     private readonly char[] buffer = new char[65536];
 
-    private readonly DebugOpExecContext context;
-    private readonly PatchExecutor executor;
     private bool followTarget = true;
     private bool followPatch = false;
+    private bool followNext = true;
     private int execTab = 0;
 
-    private XmlNode xpathContext;
-    private XmlNode newXpathContext;
+    private XPNodeRef xpathContext;
+    private XPNodeRef newXpathContext = XPNodeRef.Invalid;
     private readonly ImInputString testXpath = new(1024, ".");
-    private object xpathResult = null;
+    private List<ExecValue> xpathResult;
+    private Exception xpathErr;
 
-    private readonly List<XmlNode> nodePath = [];
     private bool newNode = true;
-    private XmlNode curNode = null;
-    private XmlNode curLineNode = null;
+    private XPNodeRef curNode = XPNodeRef.Invalid;
+    private XPNodeRef nextCurNode = XPNodeRef.Invalid;
 
-    private bool HasError => executor.Error != null;
+    private readonly ImGuiTreeView<PatchAction, PatchActionAdapter> actionView = new();
+    private readonly ImGuiTreeView<int, DummyAdapter> actionDetailView = new(
+      clickSelectable: false);
+    private readonly ImGuiTreeView<int, DummyAdapter> xpathTestView = new(
+      clickSelectable: false);
+    private readonly ImGuiTreeView<XPNodeRef, XPNodeRefAdapter> xmlView = new(
+      clickable: false,
+      defaultExpandDepth: 1);
+
+    private bool HasError => Executor.HasError;
 
     public PatchDebugPopup()
     {
       title = "PatchDebug####" + PopupId;
-      context = DebugOpExecContext.NewRoot(RootNode.CreateNavigator());
-      executor = new(context, GetPatches());
+      Executor.Step();
 
-      xpathContext = RootNode;
+      xpathContext = Domain.Doc.LatestRoot.FirstContent.LatestVersion;
 
       UpdatePath();
+    }
+
+    private void ClearXPathResult()
+    {
+      xpathResult = null;
+      xpathErr = null;
     }
 
     private void UpdatePath()
@@ -53,28 +66,33 @@ public static partial class XmlPatcher
       {
         followPatch = true;
         followTarget = false;
+        followNext = true;
       }
       if (followPatch)
-        SetCurNode(executor.CurElement);
+        SetCurNode(
+          (followNext ? Executor.Next?.Patch : Executor.Last?.Patch)
+          ?? XPNodeRef.Invalid);
       else if (followTarget)
-        SetCurNode(executor.CurTarget ?? executor.CurNav);
+        SetCurNode(
+          (followNext ? Executor.Next?.Target : Executor.Last?.Target)
+          ?? XPNodeRef.Invalid);
+      if (followPatch || followTarget)
+      {
+        if (followNext && Executor.Next != null)
+          actionView.SetSelected(Executor.Next);
+        else if (!followNext && Executor.Last != null)
+          actionView.SetSelected(Executor.Last);
+        else
+          actionView.ClearSelected();
+      }
     }
 
-    private void SetCurNode(XmlNode node)
+    private void SetCurNode(XPNodeRef node)
     {
-      curLineNode = curNode = node;
-      if (node is XmlAttribute attr)
-        curLineNode = node = attr.OwnerElement;
-      nodePath.Clear();
-      while (node != null)
-      {
-        nodePath.Add(node);
-        node = node.ParentNode as XmlElement;
-      }
-      nodePath.Reverse();
+      curNode = node;
+      xmlView.SetSelected(node.Type.IsAttribute ? node.Parent : node);
       newNode = true;
-
-      xpathResult = null;
+      ClearXPathResult();
     }
 
     protected override void OnDrawUi()
@@ -94,25 +112,19 @@ public static partial class XmlPatcher
       ImGuiEx.CenterTextCursor(ImGuiEx.AvailableSpace(), titleText);
       ImGui.Text(titleText);
 
-      if (executor.LastState != PatchExecutor.ExecState.End)
+      if (!Executor.Done)
       {
         if (StepButton("Run All Patches", enabled: !HasError, sameLine: false))
         {
-          executor.ToEnd();
+          Executor.StepToEnd();
           UpdatePath();
         }
-        if (StepButton("Next Patch", enabled: executor.CanNextPatch))
-          OnStep(executor.NextPatch());
-        if (StepButton("Step", enabled: executor.CanStep))
-          OnStep(executor.Step());
-        if (StepButton("Step Over", enabled: executor.CanStepOver))
-          OnStep(executor.StepOver());
-        if (StepButton("Step Out", enabled: executor.CanStepOut))
-          OnStep(executor.StepOut());
-        if (StepButton("Next Op", enabled: executor.CanNextOp))
-          OnStep(executor.ToNextOp());
-        if (StepButton("Next Action", enabled: executor.CanNextAction))
-          OnStep(executor.ToNextAction());
+        if (StepButton("Step", enabled: !HasError))
+          OnStep(Executor.Step());
+        if (StepButton("Step Over", enabled: !HasError))
+          OnStep(Executor.StepOver());
+        if (StepButton("Step Out", enabled: !HasError))
+          OnStep(Executor.StepOut());
       }
       else
       {
@@ -128,17 +140,16 @@ public static partial class XmlPatcher
         execTab = 0;
 
       ImGui.SetCursorScreenPos(left.Start + frameX);
-      if (Selectable("Exec Tree", execTab == 0, new float2(150, 0))) execTab = 0;
+      if (Selectable("Action Tree", execTab == 0, new float2(150, 0))) execTab = 0;
       if (Selectable("XPath Tester", execTab == 1, new float2(150, 0), sameLine: true)) execTab = 1;
 
       (_, left) = left.CutY();
       ImGui.SetNextWindowPos(left.Start);
-      ImGui.BeginChild("Exec", left.Size, ImGuiChildFlags.Borders);
-      using (var bg = ImGuiEx.SplitBg())
+      ImGui.BeginChild("Exec", left.Size, ImGuiChildFlags.Borders, ImGuiWindowFlags.NoScrollbar);
       {
         switch (execTab)
         {
-          case 0: DrawExecTree(context, null); break;
+          case 0: DrawExecTreeTab(left); break;
           case 1: DrawXPathTest(); break;
           default: break;
         }
@@ -152,13 +163,24 @@ public static partial class XmlPatcher
       }
 
       ImGui.SetCursorScreenPos(right.Start + frameX);
-      if (Selectable("Follow Target", followTarget, new float2(150, 0)))
+      ImGui.Text("Follow");
+      if (Selectable("Last", !followNext, new float2(100, 0), sameLine: true))
+      {
+        followNext = false;
+        UpdatePath();
+      }
+      if (Selectable("Next", followNext, new float2(100, 0), sameLine: true))
+      {
+        followNext = true;
+        UpdatePath();
+      }
+      if (Selectable("Target", followTarget, new float2(100, 0), sameLine: true))
       {
         followTarget = !followTarget;
         followPatch &= !followTarget;
         UpdatePath();
       }
-      if (Selectable("Follow Patch", followPatch, new float2(150, 0), sameLine: true))
+      if (Selectable("Patch", followPatch, new float2(100, 0), sameLine: true))
       {
         followPatch = !followPatch;
         followTarget &= !followPatch;
@@ -167,21 +189,27 @@ public static partial class XmlPatcher
       (_, right) = right.CutY();
       ImGui.SetNextWindowPos(right.Start);
       ImGui.BeginChild("Doc", right.Size, ImGuiChildFlags.Borders);
-      using (var bg = ImGuiEx.SplitBg())
       {
-        DrawDocTree(RootNode, 0, curNode != null, false);
+        xmlView.Begin();
+        DrawDocTree(Domain.Root);
+        xmlView.End();
       }
       ImGui.EndChild();
 
       ImGui.EndPopup();
 
       newNode = false;
-      if (newXpathContext != null)
+      if (newXpathContext.Valid)
       {
         xpathContext = newXpathContext;
-        newXpathContext = null;
-        xpathResult = null;
+        newXpathContext = XPNodeRef.Invalid;
+        ClearXPathResult();
         testXpath.SetValue(".");
+      }
+      if (nextCurNode.Valid)
+      {
+        SetCurNode(nextCurNode);
+        nextCurNode = XPNodeRef.Invalid;
       }
     }
 
@@ -215,146 +243,192 @@ public static partial class XmlPatcher
       UpdatePath();
     }
 
-    private const ImGuiTreeNodeFlags TREE_FLAGS = ImGuiTreeNodeFlags.DrawLinesFull;
-    private const ImGuiTreeNodeFlags LEAF_FLAGS =
-      TREE_FLAGS | ImGuiTreeNodeFlags.Leaf | ImGuiTreeNodeFlags.NoTreePushOnOpen;
+    private void DrawExecTreeTab(ImGuiEx.Space space)
+    {
+      var hasSelected = actionView.GetSelected(out var selected);
+      var (top, bottom) = space.CutY(hasSelected ? space.Size.Y / 2f : 0f);
 
-    private void DrawExecTree(DebugOpExecContext ctx, DebugOpExecContext parent)
+      ImGui.SetNextWindowPos(top.Start);
+      ImGui.BeginChild("##actionTree", top.Size);
+      actionView.Begin();
+      DrawExecTree(Executor.Root);
+      actionView.End();
+      ImGui.EndChild();
+
+      if (hasSelected)
+      {
+        ImGui.SetNextWindowPos(bottom.Start);
+        ImGui.BeginChild("##actionSelected", bottom.Size, ImGuiChildFlags.Borders);
+
+        DrawActionDetails(selected);
+
+        ImGui.EndChild();
+      }
+    }
+
+    private void DrawExecTree(PatchAction action)
     {
       var line = new LineBuilder(buffer);
-      var pop = false;
-      var open = true;
-      var outline = OutlineType.None;
-      var space = ImGuiEx.AvailableSpace();
-      if (parent != null)
+
+      line.Add(action.Type);
+      if (action.Type.HasPos)
       {
-        if (ctx.Type == ContextType.Patch && ctx.ContextPatch.Error == null)
-          ctx = ctx.Children[0];
-        var isCur = ctx.Type switch
+        line.Add(' ');
+        line.Add(action.Position);
+      }
+      if (action.Target.Valid && action.Type is ActionType.WithCtx or { TargetsPatch: false })
+      {
+        line.Add(' ');
+        line.AddNodePath(action.Target,
+          action.Type == ActionType.Root ? XPNodeRef.Invalid : action.Context);
+      }
+
+      var isNext = action == Executor.Next;
+
+      float4? highlightCr =
+        action.Error != null
+        ? ImColor8.Red.AsFloat4()
+        : isNext
+          ? new float4(0.6f, 1f, 0.6f, 1f)
+          : null;
+
+      using var nodeScope = actionView.TreeNode(
+        action, line.Line, out var open, out _,
+        hasChildren: action.Children.Count > 0,
+        highlightCr: highlightCr
+      );
+
+      if (!open)
+        return;
+      for (var i = 0; i < action.Children.Count; i++)
+      {
+        ImGui.PushID(i);
+        DrawExecTree(action.Children[i]);
+        ImGui.PopID();
+      }
+    }
+
+    private void DrawActionDetails(PatchAction action)
+    {
+      var line = new LineBuilder(buffer);
+      var type = action.Type;
+      line.Add(type);
+      ImGui.Text(line.Line);
+
+      if (action.Error != null)
+        ImGui.TextColored(ImColor8.Red.AsFloat4(), $"{action.Error}");
+
+      actionDetailView.Begin();
+
+      if (type.HasPos)
+      {
+        line.Clear();
+        line.Add("Position: ");
+        line.Add(action.Position);
+        using (actionDetailView.TreeNode(
+          default, line.Line, out _, out _, clickable: false, hasChildren: false)) { }
+      }
+      if (action.Patch.Valid)
+      {
+        line.Clear();
+        line.Add("Patch: ");
+        line.AddNodePath(action.Patch);
+        using (actionDetailView.TreeNode(
+          default, line.Line, out _, out var clicked, clickable: true, hasChildren: false))
         {
-          ContextType.Patch => ctx.ContextPatch == executor.CurPatch,
-          ContextType.Exec => ctx.ContextExec == executor.CurExec && executor.CurAction == null,
-          ContextType.Action => ctx.ContextAction == executor.CurAction,
-          _ => false,
-        };
-        if (isCur)
-          outline |= OutlineType.Left;
-
-        if (isCur && HasError)
-          outline = OutlineType.All;
-
-        ReadOnlySpan<char> text;
-
-        if (ctx.Type == ContextType.Patch)
-        {
-          text = ctx.ContextPatch.Id;
-          if (isCur)
-            outline = OutlineType.All;
+          if (clicked) nextCurNode = action.Patch;
         }
-        else if (ctx.Type == ContextType.Nav)
+      }
+      if (action.Target.Valid && !action.Target.SameAs(action.Patch))
+      {
+        line.Clear();
+        line.Add("Target: ");
+        line.AddNodePath(action.Target);
+        using (actionDetailView.TreeNode(
+          default, line.Line, out _, out var clicked, clickable: true, hasChildren: false))
         {
-          line.AddNodePath(ctx.Nav.UnderlyingObject as XmlNode, parent.Nav.UnderlyingObject as XmlNode);
-          text = line.Line;
+          if (clicked) nextCurNode = action.Target;
         }
-        else if (ctx.Type == ContextType.Exec)
+      }
+      if (!string.IsNullOrEmpty(action.TargetPath))
+      {
+        line.Clear();
+        line.Add("Target XPath: ");
+        line.Add(action.TargetPath);
+        using (actionDetailView.TreeNode(
+          default, line.Line, out _, out _, clickable: false, hasChildren: false)) { }
+      }
+      if (action.TargetResult.Count > 0)
+      {
+        using (actionDetailView.TreeNode(default, "Target XPath Result:",
+          out var open, out _, clickable: false))
         {
-          var op = ctx.ContextExec.Op;
-          if (isCur)
+          if (open)
           {
-            outline |= executor.LastState switch
+            var tgtCount = action.TargetResult.Count;
+            for (var i = 0; i < tgtCount && i < 100; i++)
             {
-              PatchExecutor.ExecState.ExecEnd => OutlineType.Bottom,
-              _ => OutlineType.Top,
-            };
-          }
-          if (op is XmlPatch patch)
-            text = patch.Id;
-          else
-          {
-            line.ElementOpen(op.Element, !op.Element.HasChildNodes);
-            text = line.Line;
-          }
-        }
-        else if (ctx.Type == ContextType.Action)
-        {
-          var action = ctx.ContextAction;
-          if (isCur)
-          {
-            outline |= executor.LastState switch
+              ImGui.PushID(i);
+              DrawExecValueLine(actionDetailView, action.TargetResult[i]);
+              ImGui.PopID();
+            }
+
+            if (tgtCount > 100)
             {
-              PatchExecutor.ExecState.ActionEnd => OutlineType.Bottom,
-              _ => OutlineType.Top,
-            };
+              line.Clear();
+              line.Add(tgtCount - 100);
+              line.Add(" results hidden");
+              actionDetailView.TreeNodeExtra(line.Line, ImGui.GetStyleColorVec4(ImGuiCol.TextDisabled));
+            }
           }
-          line.Add(action.Type);
-          line.Add(' ');
-          line.AddNodePath(action.Target);
-          if (action.Type != OpActionType.Delete)
-          {
-            line.Add(' ');
-            var pos = action.Pos;
-            if (pos == OpPosition.Default)
-              pos = action.Target is XmlAttribute ? OpPosition.Replace : OpPosition.Merge;
-            line.Add(pos);
-            line.Add(' ');
-          }
-          line.AddXPathVal(action.Source);
-          text = line.Line;
-        }
-        else
-        {
-          text = "???";
-        }
-
-        if (isCur && newNode)
-          ImGui.SetScrollHereY();
-
-        if (ctx.Children.Count == 0)
-          ImGui.TreeNodeEx(text, LEAF_FLAGS);
-        else
-        {
-          if (ctx.Ended)
-          {
-            ImGui.SetNextItemOpen(false);
-            ctx.Ended = false;
-          }
-          open = pop = ImGui.TreeNodeEx(text, TREE_FLAGS | ImGuiTreeNodeFlags.DefaultOpen);
-        }
-        if (isCur && HasError && open)
-        {
-          if (!pop)
-            TreeIndent();
-          var ex = executor.Error;
-          ImGui.TextColored(new(1, 0, 0, 1), ex.Message);
-          ImGui.TextColored(new(1, 0, 0, 1), ex.StackTrace);
-          if (!pop)
-            TreeUnindent();
         }
       }
-
-      if (open)
+      if (action.Source.Valid)
       {
-        for (var i = 0; i < ctx.Children.Count; i++)
+        line.Clear();
+        line.Add("Source: ");
+        line.AddNodePath(action.Source);
+        using (actionDetailView.TreeNode(
+          default, line.Line, out _, out var clicked, clickable: true, hasChildren: false))
         {
-          ImGui.PushID(i);
-          DrawExecTree(ctx.Children[i], ctx);
-          ImGui.PopID();
+          if (clicked) nextCurNode = action.Source;
+        }
+      }
+      if (!string.IsNullOrEmpty(action.SourcePath))
+      {
+        line.Clear();
+        line.Add("Source XPath: ");
+        line.Add(action.SourcePath);
+        using (actionDetailView.TreeNode(
+          default, line.Line, out _, out _, clickable: false, hasChildren: false)) { }
+      }
+      if (action.SourceResult.Count > 0)
+      {
+        using (actionDetailView.TreeNode(default, "Source XPath Result:",
+          out var open, out _, clickable: false))
+        {
+          if (open)
+          {
+            var srcCount = action.SourceResult.Count;
+            for (var i = 0; i < srcCount && i < 100; i++)
+            {
+              ImGui.PushID(i);
+              DrawExecValueLine(actionDetailView, action.SourceResult[i]);
+              ImGui.PopID();
+            }
+
+            if (srcCount > 100)
+            {
+              line.Clear();
+              line.Add(srcCount - 100);
+              line.Add(" results hidden");
+              actionDetailView.TreeNodeExtra(line.Line, ImGui.GetStyleColorVec4(ImGuiCol.TextDisabled));
+            }
+          }
         }
       }
 
-      if (pop)
-        ImGui.TreePop();
-
-      if (outline != 0)
-      {
-        const float OUTLINE_WIDTH = 3;
-        (space, _) = space.CutY();
-        space = space.TreeIndent().Expand(left: 4, bottom: -4);
-        if (HasError)
-          ImGuiEx.BgOutline(space, outline, OUTLINE_WIDTH, cr: ImColor8.Red);
-        else
-          ImGuiEx.BgOutline(space, outline, OUTLINE_WIDTH, styleCr: ImGuiCol.Button);
-      }
+      actionDetailView.End();
     }
 
     private void DrawXPathTest()
@@ -362,165 +436,187 @@ public static partial class XmlPatcher
       var line = new LineBuilder(buffer);
       line.Add("Context: ");
       line.AddNodePath(xpathContext);
-      if (Selectable(line.Line, xpathContext == curNode, float2.Zero, centered: false))
-        SetCurNode(xpathContext);
+      if (Selectable(line.Line, xpathContext.SameAs(curNode), float2.Zero, centered: false))
+        nextCurNode = xpathContext;
       line.Clear();
 
       ImGui.SetNextItemWidth(-float.Epsilon);
-      if (ImGui.InputText("##xpath", testXpath) || xpathResult == null)
+      if (ImGui.InputText("##xpath", testXpath) || (xpathResult == null && xpathErr == null))
       {
+        ClearXPathResult();
         try
         {
-          xpathResult = xpathContext.CreateNavigator().Evaluate(testXpath.ToString());
-          if (xpathResult is XPathNodeIterator iter)
-            xpathResult = iter.ToNodeList();
+          xpathResult = [.. XPath.Exec(testXpath.ToString(), xpathContext)];
         }
         catch (Exception ex)
         {
-          xpathResult = ex;
+          xpathErr = ex;
         }
       }
 
-      switch (xpathResult)
+      if (xpathErr != null)
       {
-        case Exception resEx:
-          ImGui.TextColored(ImColor8.Red.AsFloat4(), resEx.Message);
-          break;
-        case bool resBool:
-          ImGui.Text(resBool ? "true" : "false");
-          break;
-        case string resStr:
-          line.Add('"');
-          line.Add(resStr);
-          line.Add('"');
-          ImGui.Text(line.Line);
-          break;
-        case double resDouble:
-          line.Add(resDouble, "f");
-          ImGui.Text(line.Line);
-          break;
-        case List<XmlNode> resNodes:
-          line.Add("node-set(");
-          line.Add(resNodes.Count);
-          line.Add(")");
-          ImGui.Text(line.Line);
-          for (var i = 0; i < 100 && i < resNodes.Count; i++)
-          {
-            ImGui.PushID(i);
-            var node = resNodes[i];
-            line.Clear();
-            line.NodeOneLine(node);
-            if (line.Length > 100)
-            {
-              line.Length = 100;
-              line.Add("...");
-            }
-            if (Selectable(
-                line.Line, node == curNode, float2.Zero, centered: false,
-                flags: ImGuiSelectableFlags.AllowOverlap))
-              SetCurNode(node);
-            if (ImGui.IsItemHovered(ImGuiHoveredFlags.RectOnly))
-            {
-              ImGui.SameLine();
-              if (ImGui.SmallButton("Set Context"))
-                newXpathContext = node;
-            }
-            ImGui.PopID();
-          }
-          if (resNodes.Count > 100)
-          {
-            line.Clear();
-            line.Add(resNodes.Count - 1);
-            line.Add(" results hidden");
-            ImGui.TextDisabled(line.Line);
-          }
-          break;
+        ImGui.TextColored(ImColor8.Red.AsFloat4(), xpathErr.Message);
+        return;
+      }
+
+      if (xpathResult.Count != 1 || xpathResult[0].Type == XPValueType.NodeSet)
+      {
+        line.Add("node-set(");
+        line.Add(xpathResult.Count);
+        line.Add(")");
+        ImGui.Text(line.Line);
+      }
+
+      xpathTestView.Begin();
+      for (var index = 0; index < 100 && xpathResult != null && index < xpathResult.Count; index++)
+      {
+        var val = xpathResult[index];
+        ImGui.PushID(index);
+        DrawExecValueLine(xpathTestView, val, true);
+        ImGui.PopID();
+      }
+      xpathTestView.End();
+
+      if (xpathResult != null && xpathResult.Count > 100)
+      {
+        line.Clear();
+        line.Add(xpathResult.Count - 100);
+        line.Add(" results hidden");
+        ImGui.TextDisabled(line.Line);
       }
     }
 
-    private void DrawDocTree(XmlNode node, int depth, bool onPath, bool inCur)
+    private void DrawExecValueLine<N, A>(
+      ImGuiTreeView<N, A> treeView, ExecValue val, bool contextBtn = false)
+      where A : ITreeNodeAdapter<N>
     {
       var line = new LineBuilder(buffer);
-      var isCur = node == curLineNode;
-      inCur |= isCur;
-      if (isCur && newNode)
-        ImGui.SetScrollHereY();
-      var space = ImGuiEx.AvailableSpace();
-
-      if (node is XmlElement el)
+      switch (val.Type)
       {
-        onPath = onPath && (depth >= nodePath.Count || el == nodePath[depth]);
-        var children = el.ChildNodes;
-
-        if (ShouldInline(el))
-        {
-          line.ElementInline(el);
-          ImGui.TreeNodeEx(line.Line, LEAF_FLAGS);
-        }
-        else
-        {
-          line.ElementOpen(el, !el.HasChildNodes);
-
-          if (newNode)
-            ImGui.SetNextItemOpen(onPath || inCur, ImGuiCond.Always);
-          if (ImGui.TreeNodeEx(line.Line, TREE_FLAGS))
+        case XPValueType.Bool:
+          line.Add(val.Bool ? "true" : "false");
+          break;
+        case XPValueType.Number:
+          line.Add(val.Number, "0.#################");
+          break;
+        case XPValueType.String:
+          line.Add('"');
+          line.Add(val.String);
+          line.Add('"');
+          break;
+        case XPValueType.NodeSet:
+          var node = val.Node;
+          line.NodeOneLine(node);
+          if (line.Length > 80)
           {
-            for (var i = 0; i < children.Count; i++)
-            {
-              ImGui.PushID(i);
-              DrawDocTree(children[i], depth + 1, onPath, inCur);
-              ImGui.PopID();
-            }
-            ImGui.TreePop();
-
-            TreeIndent();
-            line.Clear();
-            line.ElementClose(el.Name);
-            ImGui.Text(line.Line);
-            TreeUnindent();
+            line.Length = 77;
+            line.Add("...");
           }
+          break;
+      }
+      using (treeView.TreeNode(default, line.Line, out _, out var clicked, hasChildren: false))
+      {
+        if (val.Type is XPValueType.NodeSet)
+        {
+          if (clicked)
+            nextCurNode = val.Node;
+          if (contextBtn && treeView.InlineButton("Set Context"))
+            newXpathContext = val.Node;
         }
+      }
+    }
+
+    private void DrawDocTree(XPNodeRef node)
+    {
+      var line = new LineBuilder(buffer);
+
+      var hasChildren = node.FirstContent.Valid;
+      var inline = true;
+      if (node.Type is XPType.Element)
+      {
+        inline = ShouldInline(node);
+        if (inline)
+          line.ElementInline(node);
+        else
+          line.ElementOpen(node, !hasChildren);
       }
       else
-      {
-        ImGui.PushTextWrapPos(ImGui.GetContentRegionAvail().X);
-        ImGui.PushStyleColor(ImGuiCol.Text, NodeColor(node));
-
         line.NodeInline(node);
-        ImGui.TreeNodeEx(line.Line, LEAF_FLAGS);
 
-        ImGui.PopStyleColor();
-        ImGui.PopTextWrapPos();
-      }
+      var cr = NodeColor(node).AsFloat4();
 
-      if (isCur)
+      using var nodeScope = xmlView.TreeNode(
+        node, line.Line,
+        out var open, out _,
+        hasChildren: hasChildren && !inline, textCr: cr);
+
+      if (!inline && hasChildren && open)
       {
-        (space, _) = space.CutY();
-        ImGuiEx.BgHighlight(space, styleCr: ImGuiCol.FrameBg);
+        var child = node.FirstContent;
+        var index = 0;
+        while (child.Valid)
+        {
+          ImGui.PushID(index++);
+          DrawDocTree(child);
+          child = child.NextSibling;
+          ImGui.PopID();
+        }
+
+        line.Clear();
+        line.ElementClose(node.Name);
+        xmlView.TreeNodeExtra(line.Line, cr);
       }
     }
 
-    private static bool ShouldInline(XmlElement el)
+    private static bool ShouldInline(XPNodeRef el)
     {
-      var children = el.ChildNodes;
-      if (!el.HasChildNodes)
+      var child = el.FirstContent;
+      if (!child.Valid)
         return true;
-      if (children.Count > 1)
+      if (child.NextSibling.Valid)
         return false;
-      if (children[0] is not XmlCharacterData)
+      if (child.Type is not (XPType.Text or XPType.Comment))
         return false;
-      return !children[0].Value.Contains('\n');
+      return !child.Value.Contains('\n');
     }
 
-    private static ImColor8 NodeColor(XmlNode node) => node switch
+    private static ImColor8 NodeColor(XPNodeRef node) => node.Type switch
     {
-      XmlComment => new(106, 153, 85),
-      XmlProcessingInstruction => new(180, 180, 180),
+      XPType.Comment => new(106, 153, 85),
+      XPType.ProcInst => new(180, 180, 180),
       _ => ImColor8.White,
     };
 
-    private static void TreeIndent() => ImGui.Indent(ImGui.GetTreeNodeToLabelSpacing());
-    private static void TreeUnindent() => ImGui.Unindent(ImGui.GetTreeNodeToLabelSpacing());
+
+
+    public static bool NodesEqual(ExecValue node1, ExecValue node2) => false;
+    public static bool NodeParent(ExecValue node, out ExecValue parent)
+    {
+      parent = default;
+      return false;
+    }
+
+    private class PatchActionAdapter : ITreeNodeAdapter<PatchAction>
+    {
+      public static bool NodesEqual(PatchAction node1, PatchAction node2) => node1 == node2;
+      public static bool NodeParent(PatchAction node, out PatchAction parent) =>
+        (parent = node.Parent) != null;
+    }
+
+    private class XPNodeRefAdapter : ITreeNodeAdapter<XPNodeRef>
+    {
+      public static bool NodesEqual(XPNodeRef node1, XPNodeRef node2) =>
+        node1.FirstVersion.SameAs(node2.FirstVersion);
+      public static bool NodeParent(XPNodeRef node, out XPNodeRef parent) =>
+        (parent = node.Parent).Valid && parent.Type is not XPType.Document;
+    }
+
+    private class DummyAdapter : ITreeNodeAdapter<int>
+    {
+      public static bool NodeParent(int node, out int parent) { parent = default; return false; }
+      public static bool NodesEqual(int node1, int node2) => false;
+    }
   }
 
   public class ErrorPopup : Popup
@@ -530,63 +626,63 @@ public static partial class XmlPatcher
 
     private static readonly char[] buffer = new char[0x1000];
 
-    public ErrorPopup(string error, XmlElement elementLoc = null, string stringLoc = null)
+    public ErrorPopup(string error, XPNodeRef elementLoc = default, string stringLoc = null)
     {
       var sb = new StringBuilder();
       sb.Append("Patch Error @ ");
-      if (elementLoc != null)
+      if (elementLoc.Valid)
         AddPath(elementLoc, sb);
       else
         sb.Append(stringLoc ?? "Unknown");
       sb.AppendLine();
       sb.Append(error);
-      if (elementLoc != null)
+      if (elementLoc.Valid)
       {
         sb.AppendLine().AppendLine();
 
-        var indent = AddAbbrevXmlStart(elementLoc?.ParentNode as XmlElement, sb);
+        var indent = AddAbbrevXmlStart(elementLoc.Parent, sb);
         AddPrevSiblings(elementLoc, sb, indent);
         sb.Append(indent).AppendLine($"<!-- ERROR -->");
         AddXml(elementLoc, sb, indent);
         AddNextSiblings(elementLoc, sb, indent);
-        AddAbbrevXmlEnd(elementLoc?.ParentNode as XmlElement, sb);
+        AddAbbrevXmlEnd(elementLoc.Parent, sb);
       }
       this.error = sb.ToString();
 
       title = "PatchDebug####" + PopupId;
     }
 
-    private static int AddPath(XmlElement el, StringBuilder sb)
+    private static int AddPath(XPNodeRef el, StringBuilder sb)
     {
-      if (el?.ParentNode is null or XmlDocument)
+      if (el.Parent is { Valid: false } or { Type: XPType.Document })
         return 0;
 
-      var depth = AddPath(el.ParentNode as XmlElement, sb) + 1;
+      var depth = AddPath(el.Parent, sb) + 1;
       if (depth > 1)
         sb.Append('/');
 
-      if (depth == 2 && el.GetAttributeNode("Path") is XmlAttribute pathAttr)
+      if (depth == 2 && el.Attribute("Path") is { Valid: true } pathAttr)
         sb.Append($"{el.Name}[@Path=\"{pathAttr.Value}\"]");
-      else if (el.GetAttributeNode("Id") is XmlAttribute idAttr)
+      else if (el.Attribute("Id") is { Valid: true } idAttr)
         sb.Append($"{el.Name}[@Id=\"{idAttr.Value}\"]");
       else
       {
         var idx = 1;
-        var prev = el.PreviousSibling;
-        while (prev != null)
+        var prev = el.PrevSibling;
+        while (prev.Valid)
         {
           if (prev.Name == el.Name)
             idx++;
-          prev = prev.PreviousSibling;
+          prev = prev.PrevSibling;
         }
         sb.Append($"{el.Name}[{idx}]");
       }
       return depth;
     }
 
-    private static void AddXml(XmlNode node, StringBuilder sb, string indent)
+    private static void AddXml(XPNodeRef node, StringBuilder sb, string indent)
     {
-      if (node == null)
+      if (!node.Valid)
         return;
 
       var line = new LineBuilder(buffer);
@@ -594,13 +690,16 @@ public static partial class XmlPatcher
       line.NodeOneLine(node);
       sb.Append(line.Line).AppendLine();
 
-      if (!node.HasChildNodes)
+      var child = node.FirstContent;
+      if (!child.Valid)
         return;
 
-      var children = node.ChildNodes;
       var childIndent = indent + "  ";
-      for (var i = 0; i < children.Count; i++)
-        AddXml(children[i], sb, childIndent);
+      while (child.Valid)
+      {
+        AddXml(child, sb, childIndent);
+        child = child.NextSibling;
+      }
 
       line.Clear();
       line.Add(indent);
@@ -608,12 +707,12 @@ public static partial class XmlPatcher
       sb.Append(line.Line).AppendLine();
     }
 
-    private static string AddAbbrevXmlStart(XmlElement el, StringBuilder sb)
+    private static string AddAbbrevXmlStart(XPNodeRef el, StringBuilder sb)
     {
-      if (el == null)
+      if (!el.Valid || el.Type is XPType.Document)
         return "";
 
-      var indent = AddAbbrevXmlStart(el.ParentNode as XmlElement, sb);
+      var indent = AddAbbrevXmlStart(el.Parent, sb);
 
       AddPrevSiblings(el, sb, indent);
 
@@ -626,70 +725,71 @@ public static partial class XmlPatcher
       return indent + "  ";
     }
 
-    private static void AddAbbrevXmlEnd(XmlElement el, StringBuilder sb)
+    private static void AddAbbrevXmlEnd(XPNodeRef el, StringBuilder sb)
     {
-      if (el == null)
+      if (!el.Valid || el.Type is XPType.Document)
         return;
 
       ReadOnlySpan<char> indent = "";
-      var parent = el.ParentNode as XmlElement;
-      while (parent != null)
+      var parent = el.Parent;
+      while (parent.Valid)
       {
         indent = "  " + indent.ToString();
-        parent = parent.ParentNode as XmlElement;
+        parent = parent.Parent;
       }
 
-      while (el != null)
+      while (el.Valid)
       {
-        sb.Append(indent).AppendLine($"</{el.Name}>");
+        sb.Append(indent).AppendLine($"</{el.Name.Local}>");
         AddNextSiblings(el, sb, indent);
-        el = el.ParentNode as XmlElement;
-        if (el != null)
+        el = el.Parent;
+        if (el.Valid)
           indent = indent[2..];
       }
     }
 
-    private static void AddPrevSiblings(XmlElement el, StringBuilder sb, string indent)
+    private static void AddPrevSiblings(XPNodeRef el, StringBuilder sb, string indent)
     {
       var prev = el;
-      for (var i = 0; i < 2 && prev.PreviousSibling is XmlElement prevSib; i++)
+      for (var i = 0; i < 2 && prev.PrevSibling is { Valid: true } prevSib; i++)
         prev = prevSib;
 
-      if (prev.PreviousSibling != null)
+      if (prev.PrevSibling.Valid)
         sb.Append(indent).AppendLine("...");
-      while (prev != null && prev != el)
+      while (prev.Valid && !prev.SameAs(el))
       {
         sb.Append(indent);
         AddCollapsedXml(prev, sb);
         sb.AppendLine();
-        prev = prev.NextSibling as XmlElement;
+        prev = prev.NextSibling;
       }
     }
 
-    private static void AddNextSiblings(XmlElement el, StringBuilder sb, ReadOnlySpan<char> indent)
+    private static void AddNextSiblings(XPNodeRef el, StringBuilder sb, ReadOnlySpan<char> indent)
     {
       var next = el;
-      for (var i = 0; i < 2 && next.NextSibling is XmlElement nextSib; i++)
+      for (var i = 0; i < 2 && next.NextSibling is { Valid: true } nextSib; i++)
       {
         next = nextSib;
         sb.Append(indent);
         AddCollapsedXml(next, sb);
         sb.AppendLine();
       }
-      if (next.NextSibling != null)
+      if (next.NextSibling.Valid)
         sb.Append(indent).AppendLine("...");
     }
 
-    private static void AddCollapsedXml(XmlElement el, StringBuilder sb)
+    private static void AddCollapsedXml(XPNodeRef el, StringBuilder sb)
     {
       var line = new LineBuilder(buffer);
 
       AddElOpen(el, ref line);
 
-      if (el.ChildNodes.Count > 0)
+      var child = el.FirstContent;
+      if (child.Valid)
       {
-        if (el.ChildNodes.Count == 1 && el.ChildNodes[0] is XmlText text && text.Value.Length <= 32)
-          line.Add(text.Value);
+        if (!child.NextSibling.Valid && child.Type == XPType.Text && child.Value.Length <= 32)
+          line.Add(child.Value);
         else
           line.Add("...");
 
@@ -699,21 +799,19 @@ public static partial class XmlPatcher
       sb.Append(line.Line);
     }
 
-    private static void AddElOpen(XmlElement el, ref LineBuilder line)
+    private static void AddElOpen(XPNodeRef el, ref LineBuilder line)
     {
       line.ElOpenStart(el.Name);
 
-      var attrs = el.Attributes;
-      for (var i = 0; i < attrs.Count; i++)
+      var attr = el.FirstAttr;
+      while (attr.Valid)
       {
-        var attr = attrs[i];
-        if (attr.Name == "PathKey")
-          continue;
         line.Add(' ');
         line.ElAttr(attr.Name, attr.Value);
+        attr = attr.NextSibling;
       }
 
-      line.ElOpenEnd(!el.HasChildNodes);
+      line.ElOpenEnd(!el.FirstContent.Valid);
     }
 
     protected override void OnDrawUi()

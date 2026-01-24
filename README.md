@@ -24,7 +24,9 @@ Current Features:
 
 
 ## XML Patching
-NOTE: The patch format is not finalized and may change
+**NOTE: The patch format is not finalized and may change**
+
+Uses the [XPathPatch](https://github.com/tsholmes/XPathPatch) library.
 
 To patch game xml files, add a new patch file entry to your mod.toml
 ```toml
@@ -47,17 +49,17 @@ Patch operations run against the GameData xml document, constructed from xml fil
 <Root>
   <!-- each enabled mod in same order as manifest -->
   <Mod Id="Core">
-    <!-- each asset/system/meshcollection/patch file loaded in and Path attribute added -->
-    <System Id="Sol" Path="SolSystem.xml">
+    <!-- each asset/system/meshcollection/patch file loaded in and RelPath attribute added -->
+    <System Id="Sol" RelPath="SolSystem.xml">
       <!-- rest of file contents -->
     </System>
-    <Assets>
+    <Assets RelPath="Astronomicals.xml">
       <!-- ... -->
     </Assets>
   </Mod>
   <Mod Id="MyMod">
     <!-- ... -->
-    <Patch Path="MyPatch.xml">
+    <Patch RelPath="MyPatch.xml">
       <!-- ... -->
     </Patch>
   </Mod>
@@ -73,7 +75,7 @@ id = "KittenExtensions"
 enabled = true
 debug = true
 ```
-This will save a `root.xml` file to the same directory as the `manifest.toml` which contains the patched GameData document.
+This will show a debug view that allows you to step through patches on startup. It also saves a `root.xml` file to the same directory as the `manifest.toml` which contains the unpatched GameData document.
 
 ### Patch Execution
 After loading the GameData document, each `<Patch>` file under each `<Mod>` is executed in order. The list of `<Mod>` and `<Patch>` nodes are loaded at the start, so reordering or removing those elements will not affect the patches run. The data inside a `<Patch>` however is read at the time it is executed, so patches may alter patches that will be executed after it. Each operation element in each `<Patch>` is executed with the `<Root>` node as the context (starting with an XPath of `/Root/`, not `/`).
@@ -87,36 +89,38 @@ The `Path` attribute must be a valid XPath 1.0 expression ([RFC](https://www.w3.
 The `Path` is executed from the current context node (`<Root>` unless inside a `<With>` op).
 
 #### Pos Attribute
-`<Update>` and `<Copy>` operations have a `Pos` attribute that defines where the update should occur. This value has different meaning depending on the selected node.
+ `<Copy>` operations have a `Pos` attribute that defines where the update should occur. This value has different meaning depending on the selected node.
 
 | `Pos` | Element | Text/Attribute |
 | --- | --- | --- |
-| `Default` | same as `Merge` | same as `Replace` |
 | `Replace` | replace entire element | replace value |
-| `Merge` | merge elements (see Merge docs below) | Invalid |
 | `Append` | add to end of children | add to end of value |
 | `Prepend` | add to beginning of children | add to beginning of value |
 | `Before` | insert as previous sibling | Invalid |
 | `After` | insert as following sibling | Invalid |
 
-#### `<Update>`
-Patches xml nodes at `Path` (defaults to context node) with the children of `<Update>` using the given `Pos` (defaults to `Default`). When targeting text or attribute nodes, the contents should be text (with no `<Elements>`).
+#### `<Copy>`
+Patches xml nodes at `Path` (defaults to context node) with the value at `From` (defaults `<Copy>` element contents) using the given `Pos` (defaults to `Replace`). 
 ```xml
-<Update Path="Target XPath" Pos="Pos">
-  <!-- any valid XML Content -->
-</Update>
+<Copy Path="Target XPath" From="Source XPath" Pos="Pos" />
+<Copy Path="Target XPath" Pos="Pos">
+  <!-- From Xml -->
+</Copy>
+```
+
+#### `<Merge>`
+Merges xml nodes at `Path` (defaults to context node) with the value at `From` (defaults to `<Merge>` element contents). See the [Merging](#merging) section below for details on merge semantics.
+```xml
+<Merge Path="Target XPath" From="Source XPath" Pos="Pos" />
+<Merge Path="Target XPath" Pos="Pos">
+  <!-- From Xml -->
+</Merge>
 ```
 
 #### `<Delete>`
 Deletes xml nodes at `Path` (defaults to context node).
 ```xml
 <Delete Path="Target XPath" />
-```
-
-#### `<Copy>`
-Patches xml nodes at `Path` (defaults to context node) with the value at `From` (defaults to context node) using the given `Pos` (defaults to `Default`). When targeting text or attribute nodes, `From` should target either an expression result, another attribute or text node, or an element with only text content.
-```xml
-<Copy Path="Target XPath" From="Source XPath" Pos="Pos" />
 ```
 
 #### `<If>` `<IfAny>` `<IfNone>`
@@ -150,8 +154,25 @@ Executes a set of operations using the `Path` nodes as the context. When `Path` 
 </With>
 ```
 
+#### `<SetVar>`
+Saves the result of the `Path` expression (default `<SetVar>` contents) to a variable with the given `Name`.
+```xml
+<!-- sets $myvar0 to the string 'Value' -->
+<SetVar Name="myvar0">Value</SetVar>
+<!-- sets $myvar to the sum of all attribute values holding positive numbers -->
+<SetVar Name="myvar1" Path="sum(//@*[.>0])" />
+<!-- overwrites $myvar1, referencing its last value in the expression -->
+<SetVar Name="myvar1" Path="$myvar1*2" />
+<!-- stores a node list in $myvar2 -->
+<SetVar Name="myvar2" Path="Mod/Assets" />
+<!-- use the stored $myvar2 node list in a path expression -->
+<With Path="$myvar2/Character">
+  <!-- ... -->
+</With>
+```
+
 #### Merging
-When an `<Update>` or `<Copy>` operation has a `Pos` of `Merge` (default when targeting elements), each selected source element is merged with each selected target element.
+When using the `<Merge>` operation, each selected source element is merged with each selected target element.
 - All attributes are copied from the source element (replacing the existing value if present)
 - Each child of the source is matched with a child node in the target
   - If the source element has an `Id` attribute, it matches with the first child element of the target with the same element name and `Id`
@@ -202,9 +223,9 @@ Copy a planet from `Core` into a custom `<System>`
     <!-- set context to the copied Venus -->
     <With Path="System/AtmosphericBody[@Id='Venus']">
       <!-- Change Id to MyVenus -->
-      <Update Path="@Id" Pos="Prepend">My</Update>
+      <Copy Path="@Id" Pos="Prepend">My</Copy>
       <!-- Make it a little heavier -->
-      <Update Path="Mass/@Earths">1</Update>
+      <Copy Path="Mass/@Earths">1</Copy>
       <!-- Remove stratus clouds -->
       <Remove Path="Clouds/CloudType[@Name='Stratus']" />
     </With>

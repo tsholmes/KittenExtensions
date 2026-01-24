@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="KittenExtensions/KittenExtensions.csproj" />
+  <Project Path="XPathPatch/XPathPatch.csproj" />
+</Solution>
