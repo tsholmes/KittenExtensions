@@ -503,11 +503,22 @@ ImGui.End();
 
 The rendering data from ImGui does not include any window information, only a list of `ImDrawList`, so the shader will only be run on the draw list of the rendering window. This does not include child windows, so child window contents will be overlayed on top of the parent window after the custom shader is run.
 
-## Global Post Processing Shaders
+## Post Processing Shaders
 
-Global post processing shaders can be added using the `GlobalPostShader` asset which will always run after the imgui renderpass has ended. It is based on the `ShaderEx` asset so they support the same attributes and additional bindings. The shaders are ordered with the `RenderPassId` attributes. It defaults to the `ScreenspaceVert` shader but custom vertex shaders can be set with the `VertexShaderID` attribute.
+There are two types of post processing shaders available, pre imgui shaders and post imgui shaders.\
+The only difference between them is the execution point and the asset name, otherwise they are identical which is why all of the examples are for the global (post) post processing shaders.
 
-### Subpass shaders
+Both types are based on the `ShaderEx` asset so they support the same attributes and additional bindings. The shaders are ordered with the `RenderPassId` attributes. It defaults to the `ScreenspaceVert` shader but custom vertex shaders can be set with the `VertexShaderID` attribute.\
+Normal post processing shaders use the `PostProcessingShader` asset and global post processing shaders use the `GlobalPostShader` asset.
+
+### Limitations:
+
+The shaders only target the main window, any other windows are ignored. Additionally, these shaders can't be disabled and will always run at their designated stage (use custom bindings to conditionally return the original color and achieve the same effect as disabling the shaders).\
+This is only designed for unique Renderpass/Subpass combinations. While it won't crash it there is more than shader per Pass the execution order is no longer guaranteed. Sampler2D shaders in the **same** renderpass will always run before subpass shaders.
+
+### Shader types
+
+#### Subpass shaders
 
 Normal GlobalPostShaders have a uniform `subpassInput` at set 1 binding 0 as pixel color source. They use the `SubpassId` for ordering the subpasses.\
 It is recommended to use subpasses with the same renderpass if free input sampling is not neccesary.
@@ -529,7 +540,7 @@ void main()
 }
 ```
 
-### Sampler2D shaders
+#### Sampler2D shaders
 
 Shaders that need a sampler2D as input (this allows free sampling of the input) need their own dedicated renderpass which can be done by setting the `RequiresUniqueRenderpass` attribute to `true`. They are not using the SubpassId attribute.
 
@@ -551,10 +562,5 @@ void main()
 }
 ```
 
-### Limitations
-
-This is only designed for unique Renderpass/Subpass combinations. While it won't crash it there is more than shader per Pass the execution order is no longer guaranteed. Sampler2D shaders in the **same** renderpass will always run before subpass shaders.
-
-Currently the shaders are only applied to the main window, all other windows are ignored.
 
 [^kximgui]: The marker key must be the hash of the string `KxImGuiShader`, but this class does not need to exist in this form in order to function, it is just a utility.
