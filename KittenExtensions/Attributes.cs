@@ -1,6 +1,4 @@
-
-using System;
-
+﻿using System;
 #pragma warning disable CS9113
 
 namespace KittenExtensions;
@@ -10,9 +8,3 @@ internal class KxAssetAttribute(string xmlElement) : Attribute;
 
 [AttributeUsage(AttributeTargets.Class, AllowMultiple = true)]
 internal class KxAssetInjectAttribute(Type parent, string member, string xmlElement) : Attribute;
-
-[AttributeUsage(AttributeTargets.Struct)]
-internal class KxUniformBufferAttribute(string xmlElement) : Attribute;
-
-[AttributeUsage(AttributeTargets.Field)]
-internal class KxUniformBufferLookupAttribute() : Attribute;
