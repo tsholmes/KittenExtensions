@@ -113,6 +113,10 @@ public static partial class XmlPatcher
   private static void LoadModData(ModEntry modEntry)
   {
     var tomlPath = Path.Combine("Content", modEntry.Id, "mod.toml");
+    if (!File.Exists(tomlPath))
+    {
+      tomlPath = Path.Combine(ModLibrary.LocalModsFolderPath, modEntry.Id, "mod.toml");
+    }
     var dirPath = Filepath.CorrectSeparators(Path.GetFullPath(Path.GetDirectoryName(tomlPath) ?? ""));
     ModToml mod;
     try

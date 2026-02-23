@@ -14,8 +14,10 @@ Current Features:
 ## Installation
 
 - Required [Starmap](https://github.com/StarMapLoader/StarMap)
-- Download zip from [Releases](https://github.com/tsholmes/KittenExtensions/releases/latest) and extract into game `Content` folder
-- Add to `manifest.toml` in `%USER%/my games/Kitten Space Agency`
+- Download zip from [Releases](https://github.com/tsholmes/KittenExtensions/releases/latest) and extract into one of these locations:
+    - `Documents/My Games/Kitten Space Agency/mods/` (recommended, persists across game updates)
+    - Game `Content` folder
+- The game auto-discovers new mods and prompts you to enable them. Alternatively, add to `manifest.toml` in `Documents/My Games/Kitten Space Agency`:
     ```toml
     [[mods]]
     id = "KittenExtensions"
@@ -68,7 +70,7 @@ Patch operations run against the GameData xml document, constructed from xml fil
 
 If you want to inspect the GameData document after patching is done, you can enable the debug flag in your mod manifest:
 ```toml
-# %USER%/my games/Kitten Space Agency/manifest.toml
+# Documents/My Games/Kitten Space Agency/manifest.toml
 
 [[mods]]
 id = "KittenExtensions"
